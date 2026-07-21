@@ -1,0 +1,56 @@
+@import 'tailwindcss';
+
+:root {
+  --ui-scale: 1.25;
+}
+
+/** Application chrome only (toolbar, sidebar, status, dialogs) — not the bank canvas. */
+.app-ui {
+  zoom: var(--ui-scale);
+}
+
+@theme {
+  --color-c15-bg: #141414;
+  --color-c15-surface: #1e1e1e;
+  --color-c15-surface-raised: #2a2a2a;
+  --color-c15-border: #3a3a3a;
+  --color-c15-text: #e8e8e8;
+  --color-c15-text-muted: #888888;
+  --color-c15-accent: #e8a838;
+  --color-c15-accent-dim: #b8842a;
+  --color-c15-connect: #ffeb3b;
+  --color-c15-connect-dim: #ffe600;
+  --color-c15-bank-header: #969696;
+  --color-c15-bank-header-selected: #c8d0f0;
+  --color-c15-bank-selected-glow: #adb5d9;
+  --color-c15-bank-header-text: #191919;
+  --color-c15-preset-row: #191919;
+  /** C15 backup “selected-preset” from hardware — unchanged from device. */
+  --color-c15-preset-selected: #6b7399;
+  /** App UI multi-select / click selection — distinct from C15 active preset. */
+  --color-c15-preset-ui-selected: #5c4818;
+  --color-c15-preset-ui-selected-ring: #e8a838;
+  --color-c15-preset-empty: #808080;
+  /** Drag-time attach slots (tape corridors) — distinct from cyan dock proximity. */
+  --color-c15-attach-slot: #8b92c4;
+  --color-c15-attach-slot-border: #adb5d9;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background-color: var(--color-c15-bg);
+  color: var(--color-c15-text);
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    Roboto,
+    sans-serif;
+  overflow: hidden;
+}
