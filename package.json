@@ -24,6 +24,6 @@
     "fflate": "^0.8.3"
   },
   "allowScripts": {
-    "esbuild@0.25.12": true
+    "esbuild": true
   }
 }
