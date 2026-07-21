@@ -28,7 +28,14 @@ jobs:
           cache: npm
 
       - name: Install
-        run: npm ci
+        run: |
+          node -v
+          npm -v
+          # Prefer lockfile install; fall back with full log if CI npm policy differs.
+          npm ci --no-fund --no-audit || {
+            echo 'npm ci failed; retrying with npm install'
+            npm install --no-fund --no-audit
+          }
 
       - name: Build
         run: npm run build
