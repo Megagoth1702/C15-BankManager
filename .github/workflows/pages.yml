@@ -5,17 +5,17 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Publish the Vite production build (dist/) to the gh-pages branch.
+# Repo Settings → Pages → Source: Deploy from a branch → gh-pages → / (root)
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
 concurrency:
   group: pages
   cancel-in-progress: true
 
 jobs:
-  build:
+  build-and-deploy:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -33,18 +33,21 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: dist
+      - name: Verify production index (not Vite dev entry)
+        run: |
+          test -f dist/index.html
+          grep -q '/assets/' dist/index.html
+          if grep -q 'main.ts' dist/index.html; then
+            echo 'ERROR: dist/index.html still references main.ts (dev entry)'
+            cat dist/index.html
+            exit 1
+          fi
+          echo 'OK: production index'
+          cat dist/index.html
 
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Deploy dist/ to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./dist
+          force_orphan: true
