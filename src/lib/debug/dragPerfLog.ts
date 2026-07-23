@@ -1,4 +1,5 @@
 import { bankLodMode } from '../canvas/lod';
+import { isAppDebugEnabled } from './debugFlags';
 import { log } from './sessionLog';
 
 export interface DragPerfSnapshot {
@@ -43,7 +44,7 @@ let msDock = 0;
 let msVisibility = 0;
 
 export function isDragPerfEnabled(): boolean {
-  return true;
+  return isAppDebugEnabled();
 }
 
 export function startBankDragPerfSession(

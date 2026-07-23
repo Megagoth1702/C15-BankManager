@@ -1,4 +1,5 @@
 import { writable } from 'svelte/store';
+import { isAppDebugEnabled } from './debugFlags';
 
 export type LogLevel = 'info' | 'warn' | 'error' | 'debug';
 
@@ -27,6 +28,7 @@ export function getLogBucket(): string {
 }
 
 export function startBucket(id: string): void {
+  if (!isAppDebugEnabled()) return;
   bucketId = id;
   entries = [];
   logVersion.update((n) => n + 1);
@@ -39,6 +41,8 @@ export function log(
   detail?: unknown,
   level: LogLevel = 'info',
 ): void {
+  if (!isAppDebugEnabled()) return;
+
   const entry: LogEntry = {
     id: nextId++,
     time: new Date().toISOString().slice(11, 23),

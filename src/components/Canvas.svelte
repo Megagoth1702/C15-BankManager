@@ -1,7 +1,11 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import { get } from 'svelte/store';
-  import { buildBankDragMoveSet } from '../lib/model/positioning';
+  import { planBankDrag } from '../lib/model/bankDragPlan';
+  import {
+    resolvePresetContextMenuSelection,
+    resolvePresetDropAction,
+  } from '../lib/canvas/presetDragSession';
   import {
     endBankDragPerfSession,
     recordEdgeScrollFrame,
@@ -15,11 +19,21 @@
     timeVisibility,
   } from '../lib/debug/dragPerfLog';
   import { log } from '../lib/debug/sessionLog';
+  import {
+    selTrace,
+    selTraceMarqueeHover,
+    selTracePointer,
+    selTraceResetMarqueeHoverThrottle,
+    selTraceSelection,
+  } from '../lib/debug/selectionTrace';
   import { recordBankRenderSnapshot } from '../lib/debug/renderPerfLog';
   import { shouldIgnoreKeyboardShortcut } from '../lib/keyboard';
-  import { attachHandleAnchorC15 } from '../lib/canvas/attachAnchors';
   import {
-    getDisplayPosition,
+    applyBankDragPointerPosition,
+    resolveBankDragEndDock,
+  } from '../lib/canvas/bankDragSession';
+  import { POINTER_GESTURE_THRESHOLD_PX } from '../lib/canvas/bankCardChrome';
+  import {
     resolveDisplayPositions,
     resolveDragClusterDisplayPositions,
     type DisplayPositionMap,
@@ -38,34 +52,28 @@
     registerCanvasElement,
     updatePointerPosition,
   } from '../lib/canvas/pointerPosition';
-  import { findDockTargetForDraggedBank } from '../lib/canvas/dockHitTest';
-  import {
-    findBorderSnapForDraggedBank,
-    type SynthBorderEdge,
-  } from '../lib/canvas/borderSnapHitTest';
+  import { findDockTargetForDragCluster } from '../lib/canvas/dockHitTest';
+  import type { SynthBorderEdge } from '../lib/canvas/borderSnapHitTest';
   import {
     computeEdgeScrollDelta,
     EDGE_SCROLL,
   } from '../lib/canvas/edgeAutoScroll';
   import { visibleBankUuidsInCanvas } from '../lib/canvas/viewportVisibility';
-  import {
-    handleToDockEdge,
-    highlightEdgeForDockEdge,
-    resolveAttachFromHandle,
-  } from '../lib/model/attachOperation';
   import type { DockEdge } from '../lib/model/attachOperation';
-  import { canAttachBank } from '../lib/model/attachRules';
   import {
     appSettings,
-    attachBanksBatch,
     bankMeta,
     banks,
     beginUndoGroup,
     cancelRenameBank,
     createBank,
-    detachBankFromParent,
+    detachBanksCrossingMoveSet,
     dockBankAtEdge,
     endUndoGroup,
+    expandOpenUndoGroupUuids,
+    exportAllAsBackup,
+    exportSelectedBanks,
+    exportSelectedBanksAsXml,
     moveBankTo,
     copyPresetsToBank,
     deleteSelectedPresets,
@@ -87,7 +95,6 @@
     viewport,
     zoomAt,
   } from '../lib/canvas/viewport.svelte';
-  import type { AttachDirection } from '../lib/types/bank';
   import {
     BANK_LAYOUT,
     bankOuterWidth,
@@ -96,7 +103,6 @@
   } from '../lib/canvas/geometry';
   import { snapToGrid } from '../lib/model/bankFactory';
   import { BANK_LOD_FULL_ZOOM, bankCardVariant } from '../lib/canvas/lod';
-  import AttachDragOverlay from './AttachDragOverlay.svelte';
   import BankCard from './BankCard.svelte';
   import BankCardLite from './BankCardLite.svelte';
   import CanvasContextMenu from './CanvasContextMenu.svelte';
@@ -109,12 +115,6 @@
   import SynthZoneOverlay from './SynthZoneOverlay.svelte';
   import WidthCalibRulers from './WidthCalibRulers.svelte';
 
-  interface AttachDrag {
-    sourceUuid: string;
-    direction: AttachDirection;
-    pointerId: number;
-  }
-
   let canvasEl = $state<HTMLElement | undefined>(undefined);
   let canvasWidth = $state(0);
   let canvasHeight = $state(0);
@@ -123,9 +123,6 @@
   /** True when pan started via LMB on canvas background (not middle mouse). */
   let panFromBackgroundLmb = false;
   let panStartClient = { x: 0, y: 0 };
-  let attachDrag = $state<AttachDrag | null>(null);
-  let attachPointer = $state({ clientX: 0, clientY: 0 });
-  let attachHoverUuid = $state<string | null>(null);
   let dockHover = $state<{
     targetUuid: string;
     draggedUuid: string;
@@ -142,11 +139,31 @@
     null,
   );
   let bankDragActive = $state(false);
+  /**
+   * Window-owned bank gesture with capture on the **stable canvas root**
+   * (`canvasEl` / `<main>`), never on bank cards.
+   *
+   * Cards re-render hard at grab (dragging class, attach slots, visibility).
+   * Capture on the card (or no capture at all) → UA `pointercancel` ~ms later
+   * and the pointer stream ends. Canvas root stays mounted across that thrash.
+   */
+  let bankGesture = $state<{
+    phase: 'pending' | 'dragging';
+    uuid: string;
+    pointerId: number;
+    startClientX: number;
+    startClientY: number;
+    originX: number;
+    originY: number;
+    /** performance.now() at gesture start — cancel latency diagnostics */
+    startedAt: number;
+    /** performance.now() when threshold crossed / grab began */
+    grabbedAt: number | null;
+  } | null>(null);
   let bankDragGrab = $state<{
     uuid: string;
     offsetC15X: number;
     offsetC15Y: number;
-    userDrag: boolean;
     pointerId: number;
   } | null>(null);
   let dragBaseDisplay = $state<DisplayPositionMap | null>(null);
@@ -173,13 +190,16 @@
   const DOCK_HOVER_INTERVAL = 2;
   const DOCK_HOVER_MIN_DELTA_C15 = 4;
 
-  const MARQUEE_THRESHOLD_PX = 3;
+  const MARQUEE_THRESHOLD_PX = POINTER_GESTURE_THRESHOLD_PX;
   let marqueePointerId: number | null = null;
   let marqueeStartClient = { x: 0, y: 0 };
   let marqueeCurrentClient = $state({ x: 0, y: 0 });
   let marqueeActive = $state(false);
+  /** Swallow the residual click some browsers fire under the cursor after marquee capture ends. */
+  let suppressClickAfterMarquee = false;
+  let suppressClickAfterMarqueeTimer: ReturnType<typeof setTimeout> | null = null;
 
-  const PRESET_DRAG_THRESHOLD_PX = 3;
+  const PRESET_DRAG_THRESHOLD_PX = POINTER_GESTURE_THRESHOLD_PX;
 
   let presetDrag = $state<{
     sourceBankUuid: string;
@@ -276,7 +296,6 @@
       always.add(dockHover.targetUuid);
       always.add(dockHover.draggedUuid);
     }
-    if (attachHoverUuid) always.add(attachHoverUuid);
     if (presetDropTarget) always.add(presetDropTarget.bankUuid);
     if (presetHoverBank) always.add(presetHoverBank.bankUuid);
     return always;
@@ -391,6 +410,47 @@
     edgeScrollRafId = requestAnimationFrame(tick);
   }
 
+  function releaseBankGestureCapture(pointerId: number): void {
+    if (!canvasEl) return;
+    try {
+      if (canvasEl.hasPointerCapture(pointerId)) {
+        canvasEl.releasePointerCapture(pointerId);
+        selTrace('bank.capture-release', { pointerId, ok: true });
+      }
+    } catch (err) {
+      selTrace('bank.capture-release', {
+        pointerId,
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /** Own the active pointer on the stable canvas root (survives card re-renders). */
+  function captureBankGesturePointer(pointerId: number): boolean {
+    if (!canvasEl) {
+      selTrace('bank.capture-fail', { pointerId, reason: 'no-canvas' });
+      return false;
+    }
+    try {
+      canvasEl.setPointerCapture(pointerId);
+      const has = canvasEl.hasPointerCapture(pointerId);
+      selTrace('bank.capture-set', {
+        pointerId,
+        hasCapture: has,
+        canvasConnected: canvasEl.isConnected,
+      });
+      return has;
+    } catch (err) {
+      selTrace('bank.capture-fail', {
+        pointerId,
+        reason: 'exception',
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return false;
+    }
+  }
+
   function onWindowPointerMove(event: PointerEvent): void {
     updatePointerPosition(event.clientX, event.clientY);
     if (
@@ -400,11 +460,98 @@
       recordPointerMovedFrame();
     }
     autoScrollPointer = { clientX: event.clientX, clientY: event.clientY };
+
+    if (!bankGesture || event.pointerId !== bankGesture.pointerId) return;
+
+    if (bankGesture.phase === 'pending') {
+      const dx = event.clientX - bankGesture.startClientX;
+      const dy = event.clientY - bankGesture.startClientY;
+      if (Math.hypot(dx, dy) < POINTER_GESTURE_THRESHOLD_PX) return;
+
+      const g = bankGesture;
+      const grabbedAt = performance.now();
+      bankGesture = { ...g, phase: 'dragging', grabbedAt };
+      selTrace('bank.gesture-threshold', {
+        primary: g.uuid.slice(0, 8),
+        pointerId: g.pointerId,
+        dx: Math.round(dx),
+        dy: Math.round(dy),
+        msSinceStart: Math.round(grabbedAt - g.startedAt),
+        canvasHasCapture: canvasEl?.hasPointerCapture(g.pointerId) ?? false,
+      });
+      handleBankDragGrab(g.uuid, {
+        clientX: event.clientX,
+        clientY: event.clientY,
+        originX: g.originX,
+        originY: g.originY,
+        pointerId: g.pointerId,
+      });
+      return;
+    }
+
+    if (bankDragGrab && event.pointerId === bankDragGrab.pointerId) {
+      applyBankDragPointer(event.clientX, event.clientY);
+    }
+  }
+
+  function finishBankGestureFromWindow(event: PointerEvent, reason: string): void {
+    if (!bankGesture || event.pointerId !== bankGesture.pointerId) return;
+
+    const g = bankGesture;
+    const now = performance.now();
+    selTracePointer(
+      reason === 'pointercancel' ? 'bank.gesture-cancel' : 'bank.gesture-up',
+      event,
+      {
+        phase: g.phase,
+        primary: g.uuid.slice(0, 8),
+        hadGrab: Boolean(bankDragGrab),
+        msSinceStart: Math.round(now - g.startedAt),
+        msSinceGrab:
+          g.grabbedAt != null ? Math.round(now - g.grabbedAt) : null,
+        activeDragStored: activeDragStored
+          ? { x: activeDragStored.x, y: activeDragStored.y }
+          : null,
+      },
+      { captureEl: canvasEl },
+    );
+
+    if (g.phase === 'dragging' && bankDragGrab?.uuid === g.uuid) {
+      // Commit current position even if the UA cancelled mid-drag.
+      handleBankDragEnd(g.uuid);
+    } else if (g.phase === 'pending' && reason === 'pointerup') {
+      // Click without drag — bank selection (toggle if Ctrl held during up).
+      handleBankClickSelect(g.uuid, event as unknown as MouseEvent);
+    }
+
+    releaseBankGestureCapture(g.pointerId);
+    bankGesture = null;
   }
 
   function onWindowPointerUp(event: PointerEvent): void {
-    if (!bankDragGrab || bankDragGrab.pointerId !== event.pointerId) return;
-    handleBankDragEnd(bankDragGrab.uuid);
+    finishBankGestureFromWindow(event, 'pointerup');
+  }
+
+  function onWindowPointerCancel(event: PointerEvent): void {
+    // End cleanly — after pointercancel the UA sends no further events for this id.
+    // Preventing cancel is the real fix (canvas capture); this path is the safety net.
+    finishBankGestureFromWindow(event, 'pointercancel');
+  }
+
+  function onCanvasLostPointerCapture(event: PointerEvent): void {
+    // Diagnostic: capture on canvas should not drop during an active bank drag.
+    if (!bankGesture || event.pointerId !== bankGesture.pointerId) return;
+    selTracePointer(
+      'bank.lostpointercapture',
+      event,
+      {
+        phase: bankGesture.phase,
+        primary: bankGesture.uuid.slice(0, 8),
+        hadGrab: Boolean(bankDragGrab),
+        msSinceStart: Math.round(performance.now() - bankGesture.startedAt),
+      },
+      { captureEl: canvasEl },
+    );
   }
 
   onMount(() => {
@@ -415,8 +562,10 @@
     refreshCanvasClientRect();
     window.addEventListener('pointermove', onWindowPointerMove, { capture: true });
     window.addEventListener('pointerup', onWindowPointerUp, { capture: true });
-    window.addEventListener('pointercancel', onWindowPointerUp, { capture: true });
+    window.addEventListener('pointercancel', onWindowPointerCancel, { capture: true });
+    window.addEventListener('click', onWindowClickAfterMarquee, { capture: true });
     window.addEventListener('resize', refreshCanvasClientRect);
+    canvasEl.addEventListener('lostpointercapture', onCanvasLostPointerCapture);
 
     const observer = new ResizeObserver((entries) => {
       const entry = entries[0];
@@ -434,8 +583,14 @@
       observer.disconnect();
       window.removeEventListener('pointermove', onWindowPointerMove, { capture: true });
       window.removeEventListener('pointerup', onWindowPointerUp, { capture: true });
-      window.removeEventListener('pointercancel', onWindowPointerUp, { capture: true });
+      window.removeEventListener('pointercancel', onWindowPointerCancel, { capture: true });
+      window.removeEventListener('click', onWindowClickAfterMarquee, { capture: true });
       window.removeEventListener('resize', refreshCanvasClientRect);
+      canvasEl?.removeEventListener('lostpointercapture', onCanvasLostPointerCapture);
+      if (suppressClickAfterMarqueeTimer !== null) {
+        clearTimeout(suppressClickAfterMarqueeTimer);
+        suppressClickAfterMarqueeTimer = null;
+      }
       stopEdgeScrollLoop();
       registerCanvasElement(null);
     };
@@ -600,6 +755,27 @@
     });
   }
 
+  function handleExportAllFromContextMenu(): void {
+    if (exportAllAsBackup()) {
+      log('canvas', 'export all from context menu');
+    }
+  }
+
+  function handleExportSelectedFromContextMenu(): void {
+    const count = $bankMeta.selectedBankUuids.length;
+    if (exportSelectedBanks()) {
+      log('canvas', 'export selected backup from context menu', { count });
+    }
+  }
+
+  async function handleExportSelectedXmlFromContextMenu(): Promise<void> {
+    const count = $bankMeta.selectedBankUuids.length;
+    const ok = await Promise.resolve(exportSelectedBanksAsXml());
+    if (ok) {
+      log('canvas', 'export selected XML from context menu', { count });
+    }
+  }
+
   function onPointerDown(event: PointerEvent): void {
     if (!canvasEl) return;
     const isMiddle = event.button === 1;
@@ -623,6 +799,13 @@
         marqueeStartClient = { x: event.clientX, y: event.clientY };
         marqueeCurrentClient = { x: event.clientX, y: event.clientY };
         marqueeActive = false;
+        selTraceResetMarqueeHoverThrottle();
+        selTracePointer('marquee.pointerdown', event, {
+          onBackground: true,
+          zoom: viewport.zoom,
+          bankDragActive,
+          presetDragActive: presetDrag?.active ?? false,
+        });
         canvasEl.setPointerCapture(event.pointerId);
       } else {
         panFromBackgroundLmb = true;
@@ -636,7 +819,14 @@
   function finishMarquee(event: PointerEvent): void {
     if (marqueePointerId === null) return;
 
-    if (marqueeActive && canvasEl) {
+    const didMarquee = marqueeActive;
+    selTracePointer('marquee.pointerup', event, {
+      didMarquee,
+      marqueeActiveBefore: marqueeActive,
+      zoom: viewport.zoom,
+    });
+
+    if (didMarquee && canvasEl) {
       const rect = canvasEl.getBoundingClientRect();
       const c15Rect = c15RectFromClientCorners(
         marqueeStartClient.x,
@@ -647,96 +837,83 @@
         viewport,
       );
       const hits = bankUuidsInC15Rect($banks, c15Rect, displayByUuid);
+      selTrace('marquee.hits', {
+        hitCount: hits.length,
+        hits: hits.map((u) => u.slice(0, 8)),
+        c15Rect: {
+          x: Math.round(c15Rect.x),
+          y: Math.round(c15Rect.y),
+          w: Math.round(c15Rect.width),
+          h: Math.round(c15Rect.height),
+        },
+      });
       if (hits.length > 0) {
         selectBanks(hits, 'replace');
       } else {
         selectBank(null);
       }
+      selTraceSelection('marquee.after-select', {
+        hitCount: hits.length,
+      });
+      // Residual click after releasePointerCapture can hit a preset under the cursor.
+      armMarqueeClickSuppress();
+      event.preventDefault();
     } else {
       // Ctrl+click on background without drag — clear selection.
       selectBank(null);
+      selTraceSelection('marquee.ctrl-click-clear');
     }
 
     marqueePointerId = null;
     marqueeActive = false;
-    canvasEl?.releasePointerCapture(event.pointerId);
-  }
-
-  function updateAttachHover(clientX: number, clientY: number): void {
-    if (!attachDrag || !canvasEl) {
-      attachHoverUuid = null;
-      return;
+    try {
+      canvasEl?.releasePointerCapture(event.pointerId);
+    } catch {
+      // Capture may already be released by the UA after pointerup.
     }
-    const rect = canvasEl.getBoundingClientRect();
-    const c15 = clientToC15(clientX, clientY, rect, viewport);
-    const hit = findBankAtC15Point(
-      $banks,
-      c15.x,
-      c15.y,
-      attachDrag.sourceUuid,
-      displayByUuid,
-    );
-    attachHoverUuid = hit?.uuid ?? null;
-    const dockEdge = handleToDockEdge(attachDrag.direction);
-    dockHover = hit
-      ? {
-          targetUuid: hit.uuid,
-          draggedUuid: attachDrag.sourceUuid,
-          dockEdge,
-          highlightEdge: highlightEdgeForDockEdge(dockEdge),
-          draggedHighlightEdge: dockEdge,
-        }
-      : null;
+    selTraceSelection('marquee.finished', { didMarquee });
   }
 
-  function handleAttachStart(
-    sourceUuid: string,
-    direction: AttachDirection,
-    event: PointerEvent,
-  ): void {
-    if (!canvasEl) return;
-    attachDrag = { sourceUuid, direction, pointerId: event.pointerId };
-    attachPointer = { clientX: event.clientX, clientY: event.clientY };
-    canvasEl.setPointerCapture(event.pointerId);
-    updateAttachHover(event.clientX, event.clientY);
-    log('attach', 'drag started', { sourceUuid, direction });
-  }
-
-  function finishAttachDrag(event: PointerEvent): void {
-    if (!attachDrag || !canvasEl) return;
-
-    const { sourceUuid, direction } = attachDrag;
-    const rect = canvasEl.getBoundingClientRect();
-    const c15 = clientToC15(event.clientX, event.clientY, rect, viewport);
-    const target = findBankAtC15Point(
-      $banks,
-      c15.x,
-      c15.y,
-      sourceUuid,
-      displayByUuid,
-    );
-
-    if (target) {
-      const selected = $bankMeta.selectedBankUuids;
-      const batch =
-        selected.length > 1 && selected.includes(sourceUuid)
-          ? selected
-          : [sourceUuid];
-      attachBanksBatch(batch, target.uuid, direction);
+  function armMarqueeClickSuppress(): void {
+    suppressClickAfterMarquee = true;
+    selTrace('marquee.click-suppress-arm', { ms: 100 });
+    if (suppressClickAfterMarqueeTimer !== null) {
+      clearTimeout(suppressClickAfterMarqueeTimer);
     }
+    // Residual click is dispatched right after pointerup; expire so the next real click works.
+    suppressClickAfterMarqueeTimer = setTimeout(() => {
+      suppressClickAfterMarquee = false;
+      suppressClickAfterMarqueeTimer = null;
+      selTrace('marquee.click-suppress-expire');
+    }, 100);
+  }
 
-    attachDrag = null;
-    attachHoverUuid = null;
-    dockHover = null;
-    canvasEl.releasePointerCapture(event.pointerId);
+  function onWindowClickAfterMarquee(event: MouseEvent): void {
+    if (!suppressClickAfterMarquee) return;
+    suppressClickAfterMarquee = false;
+    if (suppressClickAfterMarqueeTimer !== null) {
+      clearTimeout(suppressClickAfterMarqueeTimer);
+      suppressClickAfterMarqueeTimer = null;
+    }
+    selTracePointer(
+      'marquee.residual-click-swallowed',
+      {
+        clientX: event.clientX,
+        clientY: event.clientY,
+        pointerId: -1,
+        button: event.button,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+        shiftKey: event.shiftKey,
+        type: 'click',
+        target: event.target,
+      },
+    );
+    event.preventDefault();
+    event.stopPropagation();
   }
 
   function onPointerMove(event: PointerEvent): void {
-    if (attachDrag) {
-      attachPointer = { clientX: event.clientX, clientY: event.clientY };
-      updateAttachHover(event.clientX, event.clientY);
-      return;
-    }
     if (marqueePointerId !== null && event.pointerId === marqueePointerId) {
       marqueeCurrentClient = { x: event.clientX, y: event.clientY };
       if (!marqueeActive) {
@@ -744,7 +921,15 @@
         const dy = event.clientY - marqueeStartClient.y;
         if (Math.hypot(dx, dy) >= MARQUEE_THRESHOLD_PX) {
           marqueeActive = true;
+          selTracePointer('marquee.activated', event, {
+            thresholdPx: MARQUEE_THRESHOLD_PX,
+          });
         }
+      }
+      if (marqueeActive) {
+        selTraceMarqueeHover(event.clientX, event.clientY, {
+          zoom: viewport.zoom,
+        });
       }
       return;
     }
@@ -755,10 +940,6 @@
   }
 
   function onPointerUp(event: PointerEvent): void {
-    if (attachDrag) {
-      finishAttachDrag(event);
-      return;
-    }
     if (marqueePointerId !== null && event.pointerId === marqueePointerId) {
       finishMarquee(event);
       return;
@@ -780,14 +961,51 @@
 
   function onKeyDown(event: KeyboardEvent): void {
     if (event.code === 'Escape' && !shouldIgnoreKeyboardShortcut(event.target)) {
-      if ($bankMeta.renamingBankUuid) {
-        cancelRenameBank();
+      if (marqueePointerId !== null) {
+        const pid = marqueePointerId;
+        selTrace('marquee.cancel-escape', { pointerId: pid });
+        marqueePointerId = null;
+        marqueeActive = false;
+        try {
+          canvasEl?.releasePointerCapture(pid);
+        } catch {
+          /* capture may already be gone */
+        }
         return;
       }
-      if (attachDrag) {
-        attachDrag = null;
-        attachHoverUuid = null;
-        dockHover = null;
+      if (bankGesture || bankDragGrab) {
+        const escapePid = bankGesture?.pointerId ?? bankDragGrab?.pointerId;
+        selTrace('bank.gesture-escape', {
+          phase: bankGesture?.phase ?? null,
+          primary: (bankGesture?.uuid ?? bankDragGrab?.uuid)?.slice(0, 8) ?? null,
+          pointerId: escapePid ?? null,
+        });
+        if (bankDragGrab) {
+          // Escape aborts without committing — clear session; undo group ends empty.
+          const uuid = bankDragGrab.uuid;
+          bankDragActive = false;
+          bankDragGrab = null;
+          bankGesture = null;
+          dragBaseDisplay = null;
+          dragDisplayMap = null;
+          dragClusterUuids = null;
+          activeDragStored = null;
+          dockHover = null;
+          borderSnapHover = null;
+          borderSnapRole = null;
+          slotVisibilityDraggedUuid = null;
+          stopEdgeScrollLoop();
+          endUndoGroup();
+          refreshCanvasVisibility(true);
+          selTrace('bank.gesture-escape-aborted', { primary: uuid.slice(0, 8) });
+        } else {
+          bankGesture = null;
+        }
+        if (escapePid != null) releaseBankGestureCapture(escapePid);
+        return;
+      }
+      if ($bankMeta.renamingBankUuid) {
+        cancelRenameBank();
         return;
       }
       if (presetContextMenu) {
@@ -811,15 +1029,6 @@
       selectBank(null);
       return;
     }
-  }
-
-  function handleBankMove(
-    uuid: string,
-    x: number,
-    y: number,
-    userDrag: boolean,
-  ): void {
-    moveBankTo(uuid, x, y, { userDrag });
   }
 
   function presetDragLabel(uuids: string[], sourceBankUuid: string): string {
@@ -886,29 +1095,33 @@
     if (drag.active) {
       const target = presetDropTarget;
       if (target) {
-        const moveMode = event.ctrlKey || event.metaKey;
-        const sameBank = target.bankUuid === drag.sourceBankUuid;
-        const ok = sameBank
-          ? reorderPresetsInBankStore(
-              drag.presetUuids,
-              target.bankUuid,
-              target.insertIndex,
-            )
-          : moveMode
-            ? movePresetsToBank(
+        const action = resolvePresetDropAction(
+          drag.sourceBankUuid,
+          target.bankUuid,
+          event.ctrlKey || event.metaKey,
+        );
+        const ok =
+          action === 'reorder'
+            ? reorderPresetsInBankStore(
                 drag.presetUuids,
-                drag.sourceBankUuid,
                 target.bankUuid,
                 target.insertIndex,
               )
-            : copyPresetsToBank(
-                drag.presetUuids,
-                drag.sourceBankUuid,
-                target.bankUuid,
-                target.insertIndex,
-              );
+            : action === 'move'
+              ? movePresetsToBank(
+                  drag.presetUuids,
+                  drag.sourceBankUuid,
+                  target.bankUuid,
+                  target.insertIndex,
+                )
+              : copyPresetsToBank(
+                  drag.presetUuids,
+                  drag.sourceBankUuid,
+                  target.bankUuid,
+                  target.insertIndex,
+                );
         log('preset', ok ? 'drag drop commit' : 'drag drop failed', {
-          action: sameBank ? 'reorder' : moveMode ? 'move' : 'copy',
+          action,
           source: drag.sourceBankUuid,
           target: target.bankUuid,
           insertIndex: target.insertIndex,
@@ -919,6 +1132,12 @@
         log('preset', 'drag drop cancel', { reason: 'no target bank' });
       }
     } else {
+      selTraceSelection('preset.click-select-via-drag-up', {
+        bankUuid: drag.sourceBankUuid.slice(0, 8),
+        presetUuid: drag.clickedUuid.slice(0, 8),
+        ctrl: drag.ctrl,
+        shift: drag.shift,
+      });
       selectPreset(drag.sourceBankUuid, drag.clickedUuid, {
         ctrl: drag.ctrl,
         shift: drag.shift,
@@ -967,19 +1186,15 @@
   }
 
   function presetUuidsForContextMenu(bankUuid: string, presetUuid: string): string[] {
-    const meta = get(bankMeta);
-    const sameBank = meta.presetSelectionBankUuid === bankUuid;
-    const needle = presetUuid.toLowerCase();
-    const clickedInSelection =
-      sameBank &&
-      meta.selectedPresetUuids.some((u) => u.toLowerCase() === needle);
-
-    if (clickedInSelection && meta.selectedPresetUuids.length > 0) {
-      return meta.selectedPresetUuids;
+    const resolved = resolvePresetContextMenuSelection(
+      bankUuid,
+      presetUuid,
+      get(bankMeta),
+    );
+    if (resolved.shouldSelectClicked) {
+      selectPreset(bankUuid, presetUuid);
     }
-
-    selectPreset(bankUuid, presetUuid);
-    return [presetUuid];
+    return resolved.presetUuids;
   }
 
   function handlePresetContextMenu(
@@ -1011,7 +1226,16 @@
   ): void {
     if (presetContextMenu) closePresetContextMenu();
     if (canvasContextMenu) closeCanvasContextMenu();
-    if (event.button !== 0 || attachDrag) return;
+    if (event.button !== 0) return;
+
+    selTracePointer('preset.pointerdown', event, {
+      bankUuid: bankUuid.slice(0, 8),
+      clickedUuid: clickedUuid.slice(0, 8),
+      presetCount: presetUuids.length,
+      bankDragActive,
+      multiBankSelected: get(bankMeta).selectedBankUuids.length >= 2,
+      bankInSelection: get(bankMeta).selectedBankUuids.includes(bankUuid),
+    });
 
     presetDrag = {
       sourceBankUuid: bankUuid,
@@ -1069,16 +1293,33 @@
     };
   });
 
-  function handleBankSelect(uuid: string, event: MouseEvent): void {
+  /**
+   * Bank selection only on click-up (no drag) or at drag grab.
+   * Pointer-down does not change selection so multi-select press-drag works.
+   */
+  function handleBankClickSelect(uuid: string, event: MouseEvent): void {
+    selTracePointer(
+      'bank.click-select',
+      {
+        clientX: event.clientX,
+        clientY: event.clientY,
+        pointerId: -1,
+        button: event.button,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+        shiftKey: event.shiftKey,
+        type: 'click-select',
+        target: event.target,
+      },
+      {
+        bankUuid: uuid.slice(0, 8),
+        mode: event.ctrlKey || event.metaKey ? 'toggle' : 'replace',
+      },
+    );
     if (event.ctrlKey || event.metaKey) {
       selectBank(uuid, 'toggle');
       return;
     }
-    selectBank(uuid, 'replace');
-  }
-
-  function handleBankClickSelect(uuid: string, event: MouseEvent): void {
-    if (event.ctrlKey || event.metaKey) return;
     selectBank(uuid, 'replace');
   }
 
@@ -1087,37 +1328,96 @@
     timeApply(() => {
       const rect = canvasRectLike();
       const c15 = clientToC15(clientX, clientY, rect, viewport);
-      let dragX = c15.x - bankDragGrab!.offsetC15X;
-      let dragY = c15.y - bankDragGrab!.offsetC15Y;
+      const rawX = c15.x - bankDragGrab!.offsetC15X;
+      const rawY = c15.y - bankDragGrab!.offsetC15Y;
 
       const dragged = $banks.find((b) => b.uuid === bankDragGrab!.uuid);
-      let snappedEdge: SynthBorderEdge | null = null;
-      let snappedRole: 'outer' | 'inner' | null = null;
-      if (dragged && get(appSettings).showSynthZone) {
-        const borderSnap = findBorderSnapForDraggedBank(dragged, dragX, dragY);
-        if (borderSnap) {
-          dragX = borderSnap.snappedX;
-          dragY = borderSnap.snappedY;
-          snappedEdge = borderSnap.edge;
-          snappedRole = borderSnap.role;
-        }
-      }
+      if (!dragged) return;
 
-      dragX = snapToGrid(dragX);
-      dragY = snapToGrid(dragY);
+      const applied = applyBankDragPointerPosition(dragged, rawX, rawY, {
+        showSynthZone: get(appSettings).showSynthZone,
+      });
 
-      borderSnapHover = snappedEdge;
-      borderSnapRole = snappedRole;
-      if (snappedEdge) {
+      borderSnapHover = applied.borderSnapEdge;
+      borderSnapRole = applied.borderSnapRole;
+      if (applied.borderSnapEdge) {
         dockHover = null;
       }
 
-      const nextDisplay = computeDragDisplayMap(bankDragGrab!.uuid, dragX, dragY);
+      const nextDisplay = computeDragDisplayMap(
+        bankDragGrab!.uuid,
+        applied.dragX,
+        applied.dragY,
+      );
       dragDisplayMap = nextDisplay;
-      activeDragStored = { uuid: bankDragGrab!.uuid, x: dragX, y: dragY };
-      if (!snappedEdge) {
-        updateDockHover(bankDragGrab!.uuid, dragX, dragY, nextDisplay);
+      activeDragStored = {
+        uuid: bankDragGrab!.uuid,
+        x: applied.dragX,
+        y: applied.dragY,
+      };
+      if (!applied.borderSnapEdge) {
+        updateDockHover(
+          bankDragGrab!.uuid,
+          applied.dragX,
+          applied.dragY,
+          nextDisplay,
+        );
       }
+    });
+  }
+
+  /**
+   * Pointer-down on a bank drag surface (header, or multi-select body).
+   * Capture goes to the stable canvas root; move/up/cancel tracked on window.
+   */
+  function handleBankGestureStart(
+    uuid: string,
+    info: {
+      clientX: number;
+      clientY: number;
+      originX: number;
+      originY: number;
+      pointerId: number;
+    },
+  ): void {
+    // Replace any stale gesture (should not happen).
+    if (bankGesture || bankDragGrab) {
+      const prevPid = bankGesture?.pointerId ?? bankDragGrab?.pointerId;
+      selTrace('bank.gesture-replace', {
+        prev: bankGesture?.uuid.slice(0, 8) ?? bankDragGrab?.uuid.slice(0, 8) ?? null,
+        next: uuid.slice(0, 8),
+        prevPointerId: prevPid ?? null,
+      });
+      if (bankDragGrab) {
+        handleBankDragEnd(bankDragGrab.uuid);
+      }
+      if (prevPid != null) releaseBankGestureCapture(prevPid);
+      bankGesture = null;
+    }
+
+    // Critical: own the pointer on <main> before grab re-renders bank cards.
+    // Must run synchronously in the pointerdown turn while the pointer is active.
+    const captured = captureBankGesturePointer(info.pointerId);
+
+    bankGesture = {
+      phase: 'pending',
+      uuid,
+      pointerId: info.pointerId,
+      startClientX: info.clientX,
+      startClientY: info.clientY,
+      originX: info.originX,
+      originY: info.originY,
+      startedAt: performance.now(),
+      grabbedAt: null,
+    };
+    selTraceSelection('bank.gesture-start', {
+      primary: uuid.slice(0, 8),
+      pointerId: info.pointerId,
+      origin: { x: info.originX, y: info.originY },
+      client: { x: info.clientX, y: info.clientY },
+      zoom: viewport.zoom,
+      canvasCaptured: captured,
+      canvasHasCapture: canvasEl?.hasPointerCapture(info.pointerId) ?? false,
     });
   }
 
@@ -1128,27 +1428,47 @@
       clientY: number;
       originX: number;
       originY: number;
-      userDrag: boolean;
       pointerId: number;
     },
   ): void {
-    if (!canvasEl) return;
-    const list = get(banks);
-    const moveSet = buildBankDragMoveSet(uuid, list);
-    beginUndoGroup('Move bank', [...moveSet]);
+    if (!canvasEl) {
+      selTrace('bank.drag-grab-aborted', { reason: 'no-canvas', bank: uuid.slice(0, 8) });
+      return;
+    }
 
-    // Undock the primary if it is attached; its own children stay attached and follow.
-    timeStore(() => {
-      const member = get(banks).find((b) => b.uuid === uuid);
-      if (member?.attachedToUuid) {
-        detachBankFromParent(uuid);
-      }
+    const list = get(banks);
+    const selection = get(bankMeta).selectedBankUuids;
+    const plan = planBankDrag(uuid, list, selection);
+
+    selTraceSelection('bank.drag-grab', {
+      primary: uuid.slice(0, 8),
+      pointerId: info.pointerId,
+      origin: { x: info.originX, y: info.originY },
+      client: { x: info.clientX, y: info.clientY },
+      selectionAtGrab: selection.map((u) => u.slice(0, 8)),
+      plan: {
+        selectPrimaryOnly: plan.selectPrimaryOnly,
+        moveSet: [...plan.moveSet].map((u) => u.slice(0, 8)),
+        detachUuids: plan.detachUuids.map((u) => u.slice(0, 8)),
+        undoUuids: plan.undoUuids.map((u) => u.slice(0, 8)),
+      },
+      zoom: viewport.zoom,
+      bankDragActiveBefore: bankDragActive,
+      presetDragActive: presetDrag?.active ?? false,
+      canvasHasCapture: canvasEl?.hasPointerCapture(info.pointerId) ?? false,
+      canvasConnected: canvasEl?.isConnected ?? false,
+      msSinceStart: bankGesture
+        ? Math.round(performance.now() - bankGesture.startedAt)
+        : null,
     });
 
-    const listAfter = get(banks);
-    dragClusterUuids = moveSet;
-    dragBaseDisplay = timeLayout(() => resolveDisplayPositions(listAfter));
-    startBankDragPerfSession(listAfter, moveSet.size, viewport.zoom);
+    // Primary outside multi-selection → sole selection (cluster drag chrome).
+    if (plan.selectPrimaryOnly) {
+      selectBank(uuid, 'replace');
+    }
+
+    // Undo tracks movers + boundary orphans so multi-select partial trees restore.
+    beginUndoGroup('Move bank', plan.undoUuids);
 
     const rect = canvasRectLike();
     const c15 = clientToC15(info.clientX, info.clientY, rect, viewport);
@@ -1156,10 +1476,20 @@
       uuid,
       offsetC15X: c15.x - info.originX,
       offsetC15Y: c15.y - info.originY,
-      userDrag: info.userDrag,
       pointerId: info.pointerId,
     };
     bankDragActive = true;
+
+    // May re-render cards; safe because we do not rely on card pointer capture.
+    timeStore(() => {
+      detachBanksCrossingMoveSet(plan.moveSet);
+    });
+
+    const listAfter = get(banks);
+    dragClusterUuids = plan.moveSet;
+    dragBaseDisplay = timeLayout(() => resolveDisplayPositions(listAfter));
+    startBankDragPerfSession(listAfter, plan.moveSet.size, viewport.zoom);
+
     slotVisibilityDraggedUuid = uuid;
     dockHoverFrame = 0;
     lastDockDragX = info.originX;
@@ -1175,7 +1505,6 @@
     dragY: number,
     dragDisplay: DisplayPositionMap,
   ): void {
-    if (attachDrag) return;
     dockHoverFrame++;
     const delta = Math.hypot(dragX - lastDockDragX, dragY - lastDockDragY);
     if (
@@ -1187,22 +1516,26 @@
     lastDockDragX = dragX;
     lastDockDragY = dragY;
 
+    const cluster =
+      dragClusterUuids && dragClusterUuids.size > 0
+        ? dragClusterUuids
+        : new Set([draggedUuid]);
+
+    // Ensure the pointer primary's live override is in the display map used for corridors.
     const dragged = $banks.find((b) => b.uuid === draggedUuid);
     if (!dragged) {
       dockHover = null;
       return;
     }
+    if (!dragDisplay.has(draggedUuid)) {
+      dragDisplay = new Map(dragDisplay).set(draggedUuid, { x: dragX, y: dragY });
+    }
 
     const dock = timeDock(() =>
-      findDockTargetForDraggedBank(
-        $banks,
-        { ...dragged, x: dragX, y: dragY },
-        dragDisplay,
-        {
-          candidateUuids: visibleCanvasBankUuids,
-          excludeClusterUuids: dragClusterUuids ?? undefined,
-        },
-      ),
+      findDockTargetForDragCluster($banks, cluster, dragDisplay, {
+        candidateUuids: visibleCanvasBankUuids,
+        excludeClusterUuids: cluster,
+      }),
     );
 
     if (!dock) {
@@ -1212,7 +1545,8 @@
 
     const next = {
       targetUuid: dock.target.uuid,
-      draggedUuid,
+      /** Highlight the cluster member that would attach (child may dock, not only primary). */
+      draggedUuid: dock.memberUuid,
       dockEdge: dock.dockEdge,
       highlightEdge: dock.highlightEdge,
       draggedHighlightEdge: dock.draggedHighlightEdge,
@@ -1228,7 +1562,24 @@
   }
 
   function handleBankDragEnd(uuid: string): void {
-    if (!bankDragGrab || bankDragGrab.uuid !== uuid) return;
+    if (!bankDragGrab || bankDragGrab.uuid !== uuid) {
+      selTrace('bank.drag-end-ignored', {
+        reason: !bankDragGrab ? 'no-grab' : 'uuid-mismatch',
+        uuid: uuid.slice(0, 8),
+        grabUuid: bankDragGrab?.uuid.slice(0, 8) ?? null,
+      });
+      return;
+    }
+
+    selTraceSelection('bank.drag-end', {
+      primary: uuid.slice(0, 8),
+      final: activeDragStored
+        ? { x: activeDragStored.x, y: activeDragStored.y }
+        : null,
+      moveSet: dragClusterUuids
+        ? [...dragClusterUuids].map((u) => u.slice(0, 8))
+        : null,
+    });
 
     const final = activeDragStored;
     const clusterExclude = dragClusterUuids;
@@ -1236,6 +1587,7 @@
 
     bankDragActive = false;
     bankDragGrab = null;
+    if (bankGesture?.uuid === uuid) bankGesture = null;
     dragBaseDisplay = null;
     dragDisplayMap = null;
     dragClusterUuids = null;
@@ -1247,7 +1599,6 @@
       if (final && final.uuid === uuid) {
         timeStore(() =>
           moveBankTo(uuid, final.x, final.y, {
-            userDrag: false,
             moveUuids,
           }),
         );
@@ -1272,24 +1623,38 @@
       endBankDragPerfSession();
       refreshCanvasVisibility(true);
 
-      const dragged = get(banks).find((b) => b.uuid === uuid);
-      if (!dragged) return;
+      const list = get(banks);
+      const cluster =
+        clusterExclude && clusterExclude.size > 0
+          ? clusterExclude
+          : new Set([uuid]);
 
-      const committedDisplay = timeLayout(() => resolveDisplayPositions(get(banks)));
-      const dock = timeDock(() =>
-        findDockTargetForDraggedBank(get(banks), dragged, committedDisplay, {
-          excludeClusterUuids: clusterExclude ?? undefined,
-        }),
+      const endDock = timeDock(() =>
+        resolveBankDragEndDock(
+          list,
+          cluster,
+          timeLayout(() => resolveDisplayPositions(list)),
+        ),
       );
-      if (!dock) return;
+      if (!endDock) return;
 
-      if (clusterExclude?.has(dock.target.uuid)) return;
+      // Dock mutates member + target layout; include both in the open history group.
+      expandOpenUndoGroupUuids([endDock.memberUuid, endDock.targetUuid]);
 
-      if (dockBankAtEdge(uuid, dock.target.uuid, dock.dockEdge)) {
+      if (
+        dockBankAtEdge(
+          endDock.memberUuid,
+          endDock.targetUuid,
+          endDock.dock.dockEdge,
+        )
+      ) {
         log('attach', 'proximity dock', {
           count: 1,
-          edge: dock.dockEdge,
-          target: dock.target.name,
+          edge: endDock.dock.dockEdge,
+          member: endDock.memberUuid,
+          primary: uuid,
+          target: endDock.dock.target.name,
+          memberIsPrimary: endDock.memberUuid === uuid,
         });
       }
     } finally {
@@ -1306,41 +1671,6 @@
   const gridOffsetY = $derived(
     ((viewport.panY % gridSize) + gridSize) % gridSize,
   );
-
-  const attachDragVisual = $derived.by(() => {
-    if (!attachDrag) return null;
-    const list = $banks;
-    const source = list.find((b) => b.uuid === attachDrag!.sourceUuid);
-    if (!source || !canvasEl) return null;
-
-    const rect = canvasEl.getBoundingClientRect();
-    const c15 = clientToC15(attachPointer.clientX, attachPointer.clientY, rect, viewport);
-    const sourceDisplay = getDisplayPosition(source, displayByUuid);
-    const from = attachHandleAnchorC15(
-      source,
-      attachDrag.direction,
-      sourceDisplay.x,
-      sourceDisplay.y,
-    );
-    const hover = attachHoverUuid
-      ? list.find((b) => b.uuid === attachHoverUuid)
-      : undefined;
-    const hoverValid = Boolean(hover && (() => {
-      const resolved = resolveAttachFromHandle(
-        attachDrag!.direction,
-        attachDrag!.sourceUuid,
-        hover!.uuid,
-      );
-      return canAttachBank(
-        resolved.childUuid,
-        resolved.parentUuid,
-        resolved.attachDirection,
-        list,
-      ).ok;
-    })());
-
-    return { from, to: c15, direction: attachDrag.direction, hoverValid };
-  });
 </script>
 
 <svelte:window onkeydown={onKeyDown} />
@@ -1417,17 +1747,6 @@
         }
       />
 
-      {#if attachDragVisual}
-        <AttachDragOverlay
-          fromX={attachDragVisual.from.x}
-          fromY={attachDragVisual.from.y}
-          toX={attachDragVisual.to.x}
-          toY={attachDragVisual.to.y}
-          direction={attachDragVisual.direction}
-          hoverValid={attachDragVisual.hoverValid}
-        />
-      {/if}
-
       {#each visibleBanksForRender as { bank, index, variant } (bank.uuid)}
         {@const display = displayByUuid.get(bank.uuid) ?? { x: bank.x, y: bank.y }}
         {@const dockEdge =
@@ -1445,13 +1764,10 @@
             selected={$bankMeta.selectedBankUuids.includes(bank.uuid)}
             userPositioned={$userPositionedUuids.has(bank.uuid)}
             suppressNameTooltip={presetDrag?.active === true}
-            dragDisabled={attachDrag !== null}
-            attachDropTarget={attachHoverUuid === bank.uuid}
             dockEdgeHighlight={dockEdge}
-            onselect={handleBankSelect}
-            onclickselect={handleBankClickSelect}
-            ondraggrab={(info) => handleBankDragGrab(bank.uuid, info)}
-            ondragend={() => handleBankDragEnd(bank.uuid)}
+            dragging={bankDragGrab?.uuid === bank.uuid}
+            onbankpointerdown={(info) =>
+              handleBankGestureStart(bank.uuid, info)}
           />
         {:else}
           <BankCard
@@ -1461,9 +1777,6 @@
             {index}
             selected={$bankMeta.selectedBankUuids.includes(bank.uuid)}
             userPositioned={$userPositionedUuids.has(bank.uuid)}
-            viewportZoom={viewport.zoom}
-            dragDisabled={attachDrag !== null}
-            attachDropTarget={attachHoverUuid === bank.uuid}
             showAttachSlots={bankDragActive && visibleCanvasBankUuids.has(bank.uuid)}
             dockEdgeHighlight={dockEdge}
             presetDropHighlight={
@@ -1475,13 +1788,10 @@
                 ? presetDropTarget.insertIndex
                 : null
             }
+            dragging={bankDragGrab?.uuid === bank.uuid}
             onpresetpointerdown={handlePresetPointerDown}
             onpresetcontextmenu={handlePresetContextMenu}
-            onselect={handleBankSelect}
-            onclickselect={handleBankClickSelect}
-            onmove={handleBankMove}
-            ondraggrab={(info) => handleBankDragGrab(bank.uuid, info)}
-            ondragend={() => handleBankDragEnd(bank.uuid)}
+            onbankpointerdown={(info) => handleBankGestureStart(bank.uuid, info)}
           />
         {/if}
       {/each}
@@ -1511,7 +1821,12 @@
     <CanvasContextMenu
       clientX={canvasContextMenu.clientX}
       clientY={canvasContextMenu.clientY}
+      canExportAll={$banks.length > 0 && !$bankMeta.loading}
+      selectedCount={$bankMeta.selectedBankUuids.length}
       oncreatebank={handleCreateBankFromContextMenu}
+      onexportall={handleExportAllFromContextMenu}
+      onexportselected={handleExportSelectedFromContextMenu}
+      onexportselectedxml={handleExportSelectedXmlFromContextMenu}
       onclose={closeCanvasContextMenu}
     />
   {/if}

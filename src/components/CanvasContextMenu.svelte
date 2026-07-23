@@ -1,17 +1,43 @@
 <script lang="ts">
+  import {
+    exportSelectedBanksAsXmlLabel,
+    exportSelectedBanksLabel,
+  } from '../lib/model/bankStore';
   import { portalBody } from '../lib/ui/portalBody';
   import { uiScale } from '../lib/ui/uiScale';
 
   interface Props {
     clientX: number;
     clientY: number;
+    /** True when the session has at least one bank to export. */
+    canExportAll?: boolean;
+    /** Count of selected banks; 0 hides selected-export items. */
+    selectedCount?: number;
     oncreatebank?: () => void;
+    onexportall?: () => void;
+    onexportselected?: () => void;
+    onexportselectedxml?: () => void;
     onclose?: () => void;
   }
 
-  let { clientX, clientY, oncreatebank, onclose }: Props = $props();
+  let {
+    clientX,
+    clientY,
+    canExportAll = false,
+    selectedCount = 0,
+    oncreatebank,
+    onexportall,
+    onexportselected,
+    onexportselectedxml,
+    onclose,
+  }: Props = $props();
 
   let menuEl: HTMLDivElement | undefined = $state();
+
+  const selectedBackupLabel = $derived(exportSelectedBanksLabel(selectedCount));
+  const selectedXmlLabel = $derived(exportSelectedBanksAsXmlLabel(selectedCount));
+  const showSelectedExport = $derived(selectedCount > 0);
+  const showExportSection = $derived(canExportAll || showSelectedExport);
 
   /** Cursor-anchored popups must not use `.app-ui { zoom }` — it offsets fixed coords. */
   function placeMenuAtCursor(): void {
@@ -45,11 +71,31 @@
     clientX;
     clientY;
     $uiScale;
+    canExportAll;
+    selectedCount;
     placeMenuAtCursor();
   });
 
   function handleCreateBank(): void {
     oncreatebank?.();
+    onclose?.();
+  }
+
+  function handleExportAll(): void {
+    if (!canExportAll) return;
+    onexportall?.();
+    onclose?.();
+  }
+
+  function handleExportSelected(): void {
+    if (!showSelectedExport) return;
+    onexportselected?.();
+    onclose?.();
+  }
+
+  function handleExportSelectedXml(): void {
+    if (!showSelectedExport) return;
+    onexportselectedxml?.();
     onclose?.();
   }
 </script>
@@ -60,7 +106,7 @@
   bind:this={menuEl}
   use:portalBody
   data-canvas-context-menu="true"
-  class="fixed z-[110] min-w-[160px] rounded border border-c15-border bg-c15-surface-raised py-1 shadow-lg"
+  class="fixed z-[110] min-w-[240px] rounded border border-c15-border bg-c15-surface-raised py-1 shadow-lg"
   onclick={(e) => e.stopPropagation()}
 >
   <button
@@ -70,4 +116,33 @@
   >
     Create new bank
   </button>
+
+  {#if showExportSection}
+    <div class="my-1 border-t border-c15-border/60" role="separator"></div>
+    {#if canExportAll}
+      <button
+        type="button"
+        class="w-full px-3 py-1.5 text-left text-xs text-c15-text transition-colors hover:bg-c15-surface hover:text-c15-accent"
+        onclick={handleExportAll}
+      >
+        Export all as backup
+      </button>
+    {/if}
+    {#if showSelectedExport}
+      <button
+        type="button"
+        class="w-full px-3 py-1.5 text-left text-xs text-c15-text transition-colors hover:bg-c15-surface hover:text-c15-accent"
+        onclick={handleExportSelected}
+      >
+        {selectedBackupLabel}
+      </button>
+      <button
+        type="button"
+        class="w-full px-3 py-1.5 text-left text-xs text-c15-text transition-colors hover:bg-c15-surface hover:text-c15-accent"
+        onclick={handleExportSelectedXml}
+      >
+        {selectedXmlLabel}
+      </button>
+    {/if}
+  {/if}
 </div>

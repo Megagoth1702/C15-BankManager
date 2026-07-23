@@ -257,17 +257,52 @@ export function collectClusterDescendantUuids(
 }
 
 /**
- * Banks that translate together during a canvas bank drag:
- * the primary bank plus its attachment descendants (children follow parent).
+ * Banks that translate together during a canvas bank drag.
+ *
+ * - **Multi-select mode** when `selectedUuids.length ≥ 2` and primary is among
+ *   them: exactly the selected banks that still exist (no parent/descendant expand).
+ * - **Cluster mode** otherwise: primary + attachment descendants (children follow).
  */
 export function buildBankDragMoveSet(
   primaryUuid: string,
   bankList: Bank[],
+  selectedUuids?: readonly string[],
 ): Set<string> {
+  const selected = selectedUuids ?? [];
+  if (selected.length >= 2 && selected.includes(primaryUuid)) {
+    const existing = new Set(bankList.map((b) => b.uuid));
+    return new Set(selected.filter((u) => existing.has(u)));
+  }
   return new Set([
     primaryUuid,
     ...collectClusterDescendantUuids(primaryUuid, bankList),
   ]);
+}
+
+/**
+ * True when this bank's parent link crosses the drag move-set boundary
+ * (exactly one of child / parent is in the set). Such edges must be severed
+ * at grab so multi-select drag can leave unselected relatives behind.
+ */
+export function attachmentCrossesMoveSet(
+  bank: Bank,
+  moveSet: ReadonlySet<string>,
+): boolean {
+  if (!bank.attachedToUuid) return false;
+  return moveSet.has(bank.uuid) !== moveSet.has(bank.attachedToUuid);
+}
+
+/**
+ * Uuids that would lose their parent when applying a boundary cut for `moveSet`.
+ * Pure helper for tests and previews.
+ */
+export function banksToDetachForMoveSet(
+  bankList: readonly Bank[],
+  moveSet: ReadonlySet<string>,
+): string[] {
+  return bankList
+    .filter((b) => attachmentCrossesMoveSet(b, moveSet))
+    .map((b) => b.uuid);
 }
 
 /** True when `a` and `b` are the same bank or linked in the attachment tree. */

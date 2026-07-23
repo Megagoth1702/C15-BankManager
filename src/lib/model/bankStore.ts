@@ -1,31 +1,51 @@
+/**
+ * Public façade for document + selection + import/export commands.
+ * Implementation lives in focused modules; this file re-exports and owns
+ * bank create/delete/attach/move/preset content mutations.
+ */
 import { get } from 'svelte/store';
 import {
   logPositionChanges,
   logPositionSnapshot,
 } from '../debug/positionLog';
-import {
-  buildSingleBankViewportCheck,
-  logSingleBankViewportCheck,
-} from '../debug/singleBankImportLog';
 import { log } from '../debug/sessionLog';
-import { downloadBytes } from '../io/download';
-import { sanitizeBackupFilename } from '../io/filename';
+import { horizontalAttachStep } from '../canvas/geometry';
 import {
-  folderLabelFromImportable,
-  toImportableFiles,
-  type ImportableFile,
-} from '../io/folderPicker';
+  mapDetachedKeepingDisplay,
+  resolveDisplayPositions,
+} from '../canvas/displayPosition';
 import {
-  buildLayoutImportReport,
-  logLayoutImportReport,
-} from '../layout/layoutImportReport';
-import {
-  runMassImportPipeline,
-  type MassImportOptions,
-  type MassImportResult,
-} from './massImport';
-import type { AttachDirection, Bank, PresetManagerDoc } from '../types/bank';
+  getCreateBankPositionAtPointer,
+} from '../canvas/pointerPosition';
+import { viewport } from '../canvas/viewport.svelte';
+import type { AttachDirection, Bank } from '../types/bank';
+import type { PresetColorName } from '../xml/presetAttributes';
 import { canAttachBank } from './attachRules';
+import {
+  resolveAttachFromDockEdge,
+  resolveAttachFromHandle,
+  type DockEdge,
+} from './attachOperation';
+import {
+  createEmptyBank,
+  nextDefaultBankName,
+  snapToGrid,
+} from './bankFactory';
+import {
+  bankMeta,
+  getBanksSnapshot,
+  userPositionedUuids,
+} from './bankState';
+import {
+  clearError,
+  clearPresetSelectionFields,
+  commitBanks,
+  getBankByUuid,
+  getPrimarySelectedUuid,
+  getSelectedBank,
+  isBankSelected,
+  setStoreError,
+} from './documentCommit';
 import { deletePresetsFromBank } from './presetDelete';
 import {
   applyPresetColorBatch,
@@ -39,58 +59,18 @@ import {
   reorderPresetsInBank,
 } from './presetMove';
 import {
-  resolveAttachFromDockEdge,
-  resolveAttachFromHandle,
-  type DockEdge,
-} from './attachOperation';
-import { compressString } from '../xml/gzip';
-import { parseFileBytes } from '../xml/parse';
-import {
-  formatSerializeDate,
-  serializePresetManagerXml,
-  validateBanksForC15Export,
-} from '../xml/serialize';
-import {
-  appSettings,
-  bankMeta,
-  banks,
-  clearUserPositioned,
-  getBanksSnapshot,
-  userPositionedUuids,
-  type ImportMode,
-  type InteractionSurface,
-} from './bankState';
-import { saveSidebarSettings, type SidebarTab } from '../ui/sidebarSettings';
-import {
-  mapDetachedKeepingDisplay,
-  resolveDisplayPositions,
-} from '../canvas/displayPosition';
-import { horizontalAttachStep } from '../canvas/geometry';
-import {
-  getCanvasScreenSize,
-  getCreateBankPositionAtPointer,
-  positionBanksAtViewportCenter,
-} from '../canvas/pointerPosition';
-import { viewport } from '../canvas/viewport.svelte';
-import {
-  createEmptyBank,
-  nextDefaultBankName,
-  snapToGrid,
-} from './bankFactory';
-import { mergeBankLists, type MergeBankListsOptions } from './importMerge';
-import {
+  attachmentCrossesMoveSet,
   collectClusterDescendantUuids,
   computeRealignedBanks,
   computeRecommendedPosition,
   countAttachedBanks,
-  healAttachedPositionsOnImport,
 } from './positioning';
-import { clearSessionDirty, markSessionDirty } from './sessionDirty';
 import {
   beginUndoGroup,
   captureBankContent,
   clearHistory,
   endUndoGroup,
+  expandOpenUndoGroupUuids,
   isUndoGroupOpen,
   recordBankStructureFromLists,
   recordLayoutAround,
@@ -98,17 +78,78 @@ import {
   undo as undoHistory,
   redo as redoHistory,
 } from './undoHistory';
+import { findByUuid } from '../uuid/uuidKey';
 
 export type { ImportMode, InteractionSurface } from './bankState';
+export type { SelectMode } from './selectionCommands';
+export type {
+  ExportBackupOptions,
+  ExportBanksAsXmlOptions,
+} from './exportSession';
+
 export {
   canUndo,
   canRedo,
   beginUndoGroup,
   endUndoGroup,
+  expandOpenUndoGroupUuids,
   cancelUndoGroup,
   clearHistory,
   isUndoGroupOpen,
 } from './undoHistory';
+
+export {
+  appSettings,
+  bankMeta,
+  banks,
+  userPositionedUuids,
+} from './bankState';
+export { sessionDirty } from './sessionDirty';
+export { countAttachedBanks } from './positioning';
+
+export {
+  clearError,
+  getBankByUuid,
+  getPrimarySelectedUuid,
+  getSelectedBank,
+  isBankSelected,
+} from './documentCommit';
+
+export {
+  setSidebarTab,
+  setShowSynthZone,
+  setShowDebugShapes,
+} from './settingsCommands';
+
+export {
+  selectBanks,
+  selectBank,
+  selectBankRange,
+  selectPreset,
+  selectPresetsBatch,
+  startRenameBank,
+  cancelRenameBank,
+  startRenamePreset,
+  cancelRenamePreset,
+} from './selectionCommands';
+
+export {
+  buildDefaultExportFilename,
+  exportSelectedBanksLabel,
+  exportSelectedBanksAsXmlLabel,
+  exportAllAsBackup,
+  exportSelectedBanks,
+  exportSelectedBanksAsXml,
+  exportBanksAsXml,
+  exportBackup,
+} from './exportSession';
+
+export {
+  importFile,
+  importFolderFilesLegacy,
+  executeMassImport,
+  importFolderFiles,
+} from './importSession';
 
 export function undo(): boolean {
   return undoHistory();
@@ -118,281 +159,6 @@ export function redo(): boolean {
   return redoHistory();
 }
 
-export function setSidebarTab(tab: SidebarTab): void {
-  const width = get(appSettings).sidebarWidthPx;
-  appSettings.update((s) => ({ ...s, sidebarTab: tab }));
-  saveSidebarSettings({ widthPx: width, tab });
-}
-export {
-  appSettings,
-  bankMeta,
-  banks,
-  userPositionedUuids,
-} from './bankState';
-export { sessionDirty } from './sessionDirty';
-
-export { countAttachedBanks } from './positioning';
-
-export function getBankByUuid(uuid: string): Bank | undefined {
-  return getBanksSnapshot().find((bank) => bank.uuid === uuid);
-}
-
-export function getPrimarySelectedUuid(): string | null {
-  const uuids = get(bankMeta).selectedBankUuids;
-  return uuids.length > 0 ? uuids[uuids.length - 1]! : null;
-}
-
-export function getSelectedBank(): Bank | undefined {
-  const uuid = getPrimarySelectedUuid();
-  if (!uuid) return undefined;
-  return getBankByUuid(uuid);
-}
-
-export function isBankSelected(uuid: string): boolean {
-  return get(bankMeta).selectedBankUuids.includes(uuid);
-}
-
-export type SelectMode = 'replace' | 'toggle' | 'add';
-
-function commitBanks(list: Bank[]): void {
-  banks.set(list);
-  markSessionDirty();
-}
-
-function applyImportHealing(bankList: Bank[]): Bank[] {
-  logPositionSnapshot('import', 'positions before heal (raw from XML)', bankList);
-
-  const { banks: healed, healedCount } = healAttachedPositionsOnImport(bankList);
-
-  log('store', 'importHeal summary', {
-    healedCount,
-    attachedCount: countAttachedBanks(bankList),
-  });
-
-  if (healedCount > 0) {
-    logPositionChanges('import', 'positions changed by import heal', bankList, healed);
-  }
-
-  logPositionSnapshot('import', 'positions after heal (in store)', healed);
-  return healed;
-}
-
-function mergeBanks(
-  incoming: Bank[],
-  doc?: PresetManagerDoc,
-  mergeOptions?: MergeBankListsOptions,
-): void {
-  const current = getBanksSnapshot();
-  const hadBanks = current.length > 0;
-  const merged = applyImportHealing(mergeBankLists(current, incoming, mergeOptions));
-  banks.set(merged);
-  clearHistory();
-
-  bankMeta.update((m) => {
-    const selected = m.selectedBankUuids.filter((uuid) =>
-      merged.some((b) => b.uuid === uuid),
-    );
-    return {
-      ...m,
-      selectedBankUuids: selected,
-      serializeDate: doc?.serializeDate || m.serializeDate,
-      selectedMidiBankUuid: doc?.selectedMidiBankUuid || m.selectedMidiBankUuid,
-      lastImportMode: 'merge',
-    };
-  });
-
-  if (hadBanks) {
-    markSessionDirty();
-  } else {
-    clearSessionDirty();
-  }
-
-  log('store', 'mergeBanks', { bankCount: merged.length, incoming: incoming.length });
-}
-
-function applyDocument(doc: PresetManagerDoc): void {
-  mergeBanks(doc.banks, doc);
-}
-
-export function selectBanks(
-  uuids: readonly string[],
-  mode: 'replace' | 'add' = 'replace',
-): void {
-  bankMeta.update((m) => {
-    const next =
-      mode === 'add'
-        ? [...new Set([...m.selectedBankUuids, ...uuids])]
-        : [...uuids];
-    const primary = next[next.length - 1] ?? null;
-    const base = mode === 'replace' ? clearPresetSelectionFields(m) : m;
-    return {
-      ...base,
-      selectedBankUuids: next,
-      deleteFocus: next.length > 0 ? 'bank' : null,
-      renamingBankUuid:
-        base.renamingBankUuid && primary && base.renamingBankUuid !== primary
-          ? null
-          : base.renamingBankUuid,
-    };
-  });
-  log('store', 'selectBanks', { count: uuids.length, mode });
-}
-
-function clearPresetSelectionFields<
-  T extends {
-    selectedPresetUuids: string[];
-    presetSelectionBankUuid: string | null;
-    presetSelectionAnchorUuid: string | null;
-    presetSelectionBaseUuids: string[];
-  },
->(m: T): T {
-  return {
-    ...m,
-    selectedPresetUuids: [],
-    presetSelectionBankUuid: null,
-    presetSelectionAnchorUuid: null,
-    presetSelectionBaseUuids: [],
-  };
-}
-
-function presetRangeInOrder(
-  order: readonly string[],
-  anchorUuid: string,
-  clickedUuid: string,
-): string[] {
-  const i1 = order.indexOf(anchorUuid);
-  const i2 = order.indexOf(clickedUuid);
-  if (i1 === -1 || i2 === -1) return [clickedUuid];
-  const [lo, hi] = i1 < i2 ? [i1, i2] : [i2, i1];
-  return order.slice(lo, hi + 1);
-}
-
-function uniquePresetUuids(uuids: readonly string[]): string[] {
-  return [...new Set(uuids)];
-}
-
-function syncBankSelectedPreset(bankUuid: string, presetUuid: string): void {
-  banks.update((list) =>
-    list.map((b) =>
-      b.uuid === bankUuid ? { ...b, selectedPreset: presetUuid } : b,
-    ),
-  );
-}
-
-export function selectPreset(
-  bankUuid: string,
-  presetUuid: string,
-  options: { ctrl?: boolean; shift?: boolean; surface?: InteractionSurface } = {},
-): void {
-  const list = getBanksSnapshot();
-  const bank = list.find((b) => b.uuid === bankUuid);
-  if (!bank) return;
-
-  const surface = options.surface ?? 'canvas';
-  setSidebarTab('presets');
-
-  const order = bank.presetOrder;
-  const meta = get(bankMeta);
-  const renaming = meta.renamingPreset;
-  if (
-    renaming &&
-    (renaming.bankUuid !== bankUuid ||
-      renaming.presetUuid.toLowerCase() !== presetUuid.toLowerCase())
-  ) {
-    cancelRenamePreset();
-  }
-  const sameBank = meta.presetSelectionBankUuid === bankUuid;
-
-  if (options.shift && sameBank) {
-    const anchor =
-      meta.presetSelectionAnchorUuid ??
-      meta.selectedPresetUuids[meta.selectedPresetUuids.length - 1];
-    if (anchor) {
-      const range = presetRangeInOrder(order, anchor, presetUuid);
-      const base =
-        meta.presetSelectionBaseUuids.length > 0
-          ? meta.presetSelectionBaseUuids
-          : [anchor];
-      const selected = uniquePresetUuids([...base, ...range]);
-      bankMeta.update((m) => ({
-        ...m,
-        presetSelectionBankUuid: bankUuid,
-        selectedPresetUuids: selected,
-        deleteFocus: 'preset',
-        selectionSurface: surface,
-      }));
-      syncBankSelectedPreset(bankUuid, presetUuid);
-      log('store', 'selectPresetRange', { bankUuid, count: selected.length });
-      return;
-    }
-  }
-
-  if (options.ctrl && sameBank) {
-    const next = meta.selectedPresetUuids.includes(presetUuid)
-      ? meta.selectedPresetUuids.filter((u) => u !== presetUuid)
-      : [...meta.selectedPresetUuids, presetUuid];
-    const frozen = uniquePresetUuids(next);
-    bankMeta.update((m) => ({
-      ...m,
-      presetSelectionBankUuid: bankUuid,
-      selectedPresetUuids: frozen,
-      presetSelectionAnchorUuid: presetUuid,
-      presetSelectionBaseUuids: frozen,
-      deleteFocus: 'preset',
-      selectionSurface: surface,
-    }));
-    if (frozen.length > 0) {
-      syncBankSelectedPreset(bankUuid, presetUuid);
-    }
-    log('store', 'selectPresetToggle', { bankUuid, presetUuid });
-    return;
-  }
-
-  bankMeta.update((m) => ({
-    ...m,
-    presetSelectionBankUuid: bankUuid,
-    selectedPresetUuids: [presetUuid],
-    presetSelectionAnchorUuid: presetUuid,
-    presetSelectionBaseUuids: [presetUuid],
-    deleteFocus: 'preset',
-    selectionSurface: surface,
-  }));
-  syncBankSelectedPreset(bankUuid, presetUuid);
-  log('store', 'selectPreset', { bankUuid, presetUuid });
-}
-
-/** Select multiple presets in one bank (e.g. when starting a drag). */
-export function selectPresetsBatch(
-  bankUuid: string,
-  presetUuids: readonly string[],
-  surface: InteractionSurface = 'canvas',
-): void {
-  const frozen = uniquePresetUuids(presetUuids);
-  if (frozen.length === 0) return;
-  const primary = frozen[frozen.length - 1]!;
-  const meta = get(bankMeta);
-  const renaming = meta.renamingPreset;
-  if (
-    renaming &&
-    (renaming.bankUuid !== bankUuid ||
-      !frozen.some((u) => u.toLowerCase() === renaming.presetUuid.toLowerCase()))
-  ) {
-    cancelRenamePreset();
-  }
-  setSidebarTab('presets');
-  bankMeta.update((m) => ({
-    ...m,
-    presetSelectionBankUuid: bankUuid,
-    selectedPresetUuids: frozen,
-    presetSelectionAnchorUuid: primary,
-    presetSelectionBaseUuids: frozen,
-    deleteFocus: 'preset',
-    selectionSurface: surface,
-  }));
-  syncBankSelectedPreset(bankUuid, primary);
-  log('store', 'selectPresetsBatch', { bankUuid, count: frozen.length });
-}
-
 export function deleteSelectedPresets(): boolean {
   const meta = get(bankMeta);
   const bankUuid = meta.presetSelectionBankUuid;
@@ -400,11 +166,11 @@ export function deleteSelectedPresets(): boolean {
   if (!bankUuid || uuids.length === 0) return false;
 
   const list = getBanksSnapshot();
-  const bank = list.find((b) => b.uuid === bankUuid);
+  const bank = findByUuid(list, bankUuid);
   if (!bank) return false;
 
   const names = uuids
-    .map((uuid) => bank.presets.find((p) => p.uuid.toLowerCase() === uuid.toLowerCase())?.name)
+    .map((uuid) => findByUuid(bank.presets, uuid)?.name)
     .filter(Boolean);
   const message =
     uuids.length === 1
@@ -461,105 +227,6 @@ export function duplicateSelectedPresets(): boolean {
   }));
   log('store', 'duplicateSelectedPresets', { bankUuid, count: result.moved.length });
   return true;
-}
-
-export function selectBank(
-  uuid: string | null,
-  mode: SelectMode = 'replace',
-  surface: InteractionSurface = 'canvas',
-): void {
-  const meta = get(bankMeta);
-  if (uuid !== null) {
-    setSidebarTab('banks');
-    if (meta.renamingBankUuid && meta.renamingBankUuid !== uuid) {
-      cancelRenameBank();
-    }
-    if (meta.renamingPreset) {
-      cancelRenamePreset();
-    }
-  } else if (meta.renamingBankUuid || meta.renamingPreset) {
-    cancelRenameBank();
-    cancelRenamePreset();
-  }
-
-  bankMeta.update((m) => {
-    if (uuid === null) {
-      return clearPresetSelectionFields({
-        ...m,
-        selectedBankUuids: [],
-        renamingBankUuid: null,
-        deleteFocus: null,
-      });
-    }
-
-    let next: string[];
-    if (mode === 'replace') {
-      next = [uuid];
-    } else if (mode === 'toggle') {
-      next = m.selectedBankUuids.includes(uuid)
-        ? m.selectedBankUuids.filter((u) => u !== uuid)
-        : [...m.selectedBankUuids, uuid];
-    } else {
-      next = m.selectedBankUuids.includes(uuid)
-        ? m.selectedBankUuids
-        : [...m.selectedBankUuids, uuid];
-    }
-
-    const primary = next[next.length - 1] ?? null;
-    const cleared =
-      mode === 'replace'
-        ? clearPresetSelectionFields(m)
-        : m;
-    return {
-      ...cleared,
-      selectedBankUuids: next,
-      deleteFocus: uuid !== null && next.length > 0 ? 'bank' : null,
-      selectionSurface: surface,
-      renamingBankUuid:
-        cleared.renamingBankUuid && primary && cleared.renamingBankUuid !== primary
-          ? null
-          : cleared.renamingBankUuid,
-    };
-  });
-  log('store', 'selectBank', { uuid, mode, surface });
-}
-
-/** Sidebar tree click — Ctrl toggles; Shift range in tree order; plain click replaces. */
-export function selectBankRange(
-  uuid: string,
-  orderedUuids: string[],
-  options: { shift?: boolean; ctrl?: boolean },
-): void {
-  if (options.ctrl) {
-    selectBank(uuid, 'toggle', 'sidebar');
-    return;
-  }
-  if (options.shift) {
-    const current = get(bankMeta).selectedBankUuids;
-    const anchor = current[current.length - 1];
-    if (!anchor) {
-      selectBank(uuid, 'replace', 'sidebar');
-      return;
-    }
-    const i1 = orderedUuids.indexOf(anchor);
-    const i2 = orderedUuids.indexOf(uuid);
-    if (i1 === -1 || i2 === -1) {
-      selectBank(uuid, 'replace', 'sidebar');
-      return;
-    }
-    const [lo, hi] = i1 < i2 ? [i1, i2] : [i2, i1];
-    setSidebarTab('banks');
-    bankMeta.update((m) => ({
-      ...clearPresetSelectionFields(m),
-      selectedBankUuids: orderedUuids.slice(lo, hi + 1),
-      renamingBankUuid: null,
-      deleteFocus: 'bank',
-      selectionSurface: 'sidebar',
-    }));
-    log('store', 'selectBankRange', { uuid, lo, hi });
-    return;
-  }
-  selectBank(uuid, 'replace', 'sidebar');
 }
 
 type PresetDropAction = 'copy' | 'move' | 'reorder';
@@ -660,7 +327,7 @@ function defaultNewBankPosition(
   selectedUuid: string | null,
 ): { x: number; y: number } {
   if (selectedUuid) {
-    const selected = list.find((bank) => bank.uuid === selectedUuid);
+    const selected = findByUuid(list, selectedUuid);
     if (selected) {
       return {
         x: snapToGrid(selected.x + horizontalAttachStep()),
@@ -690,7 +357,6 @@ export function createBank(
   options: { name?: string; x?: number; y?: number; atPointer?: boolean } = {},
 ): Bank {
   const list = getBanksSnapshot();
-  const meta = get(bankMeta);
   const position =
     options.x !== undefined && options.y !== undefined
       ? { x: snapToGrid(options.x), y: snapToGrid(options.y) }
@@ -742,47 +408,6 @@ export function renameBank(uuid: string, name: string): boolean {
   return true;
 }
 
-export function startRenameBank(uuid: string, surface: InteractionSurface): void {
-  setSidebarTab('banks');
-  bankMeta.update((m) => ({
-    ...m,
-    selectedBankUuids: [uuid],
-    deleteFocus: 'bank',
-    renamingBankUuid: uuid,
-    renameSurface: surface,
-    selectionSurface: surface,
-    renamingPreset: null,
-    error: null,
-  }));
-  log('store', 'startRenameBank', { uuid, surface });
-}
-
-export function cancelRenameBank(): void {
-  bankMeta.update((m) => ({ ...m, renamingBankUuid: null, renameSurface: null }));
-}
-
-export function startRenamePreset(
-  bankUuid: string,
-  presetUuid: string,
-  surface: InteractionSurface,
-): void {
-  setSidebarTab('presets');
-  bankMeta.update((m) => ({
-    ...m,
-    presetSelectionBankUuid: bankUuid,
-    selectedPresetUuids: [presetUuid],
-    deleteFocus: 'preset',
-    renamingPreset: { bankUuid, presetUuid },
-    renameSurface: surface,
-    selectionSurface: surface,
-    renamingBankUuid: null,
-  }));
-}
-
-export function cancelRenamePreset(): void {
-  bankMeta.update((m) => ({ ...m, renamingPreset: null, renameSurface: null }));
-}
-
 export function renamePreset(bankUuid: string, presetUuid: string, name: string): boolean {
   const trimmed = name.trim();
   if (!trimmed) {
@@ -806,7 +431,7 @@ export function renamePreset(bankUuid: string, presetUuid: string, name: string)
 export function setPresetColor(
   bankUuid: string,
   presetUuids: readonly string[],
-  color: import('../xml/presetAttributes').PresetColorName,
+  color: PresetColorName,
 ): boolean {
   const list = getBanksSnapshot();
   const before = captureBankContent(list, [bankUuid], true);
@@ -833,15 +458,6 @@ export function setPresetComment(
   recordPresetContentChange('Change preset comment', before, after);
   log('store', 'setPresetComment', { bankUuid, presetUuid });
   return true;
-}
-
-export function clearError(): void {
-  bankMeta.update((m) => ({ ...m, error: null }));
-}
-
-function setStoreError(message: string): void {
-  bankMeta.update((m) => ({ ...m, error: message }));
-  log('store', 'error', message, 'warn');
 }
 
 function sortBanksForBatchAttach(uuids: string[], list: Bank[]): string[] {
@@ -871,8 +487,8 @@ export function attachBank(
     return false;
   }
 
-  const parent = list.find((b) => b.uuid === parentUuid)!;
-  const child = list.find((b) => b.uuid === childUuid)!;
+  const parent = findByUuid(list, parentUuid)!;
+  const child = findByUuid(list, childUuid)!;
   const raw = options.preservePosition
     ? { x: child.x, y: child.y }
     : computeRecommendedPosition(parent, child, attachDirection);
@@ -919,7 +535,6 @@ export function dockBankAtEdge(
   dockEdge: DockEdge,
 ): boolean {
   const resolved = resolveAttachFromDockEdge(dockEdge, droppedOntoUuid, draggedUuid);
-  // Align child to parent: horizontal → shared top Y; vertical → shared left X.
   return attachBank(resolved.childUuid, resolved.parentUuid, resolved.attachDirection);
 }
 
@@ -959,30 +574,70 @@ export function attachBanksBatch(
   return count;
 }
 
-/** User-initiated detach (sidebar / future context menu). */
-export function detachBank(uuid: string): boolean {
+/**
+ * Canonical detach: clear parent links for matching banks and bake display
+ * origins into stored x/y so cards do not jump. Prefer calling inside an open
+ * undo group during drag; otherwise records a one-shot layout entry.
+ */
+export function detachBanksKeepingDisplay(
+  shouldDetach: (bank: Bank) => boolean,
+  options: {
+    label?: string;
+    /** History scope when no undo group is open (defaults to detaching banks). */
+    historyUuids?: readonly string[];
+  } = {},
+): number {
   const list = getBanksSnapshot();
-  const bank = list.find((b) => b.uuid === uuid);
-  if (!bank?.attachedToUuid) {
-    setStoreError('Bank is not attached to a parent.');
-    return false;
-  }
+  const toDetach = list.filter(
+    (b) => Boolean(b.attachedToUuid) && shouldDetach(b),
+  );
+  if (toDetach.length === 0) return 0;
 
-  const formerParentUuid = bank.attachedToUuid;
-  const formerParent = list.find((b) => b.uuid === formerParentUuid);
+  const historyUuids =
+    options.historyUuids ?? toDetach.map((b) => b.uuid);
+  const label = options.label ?? 'Detach bank';
 
   const apply = (): void => {
     const current = getBanksSnapshot();
     commitBanks(
-      mapDetachedKeepingDisplay(current, (b) => b.uuid === uuid),
+      mapDetachedKeepingDisplay(
+        current,
+        (b) => Boolean(b.attachedToUuid) && shouldDetach(b),
+      ),
     );
   };
 
   if (isUndoGroupOpen()) {
     apply();
   } else {
-    recordLayoutAround('Detach bank', [uuid], apply);
+    recordLayoutAround(label, [...historyUuids], apply);
   }
+
+  log('store', 'detachBanksKeepingDisplay', {
+    count: toDetach.length,
+    uuids: toDetach.map((b) => b.uuid),
+    formerParents: toDetach.map((b) => b.attachedToUuid),
+    label,
+  });
+  return toDetach.length;
+}
+
+/** User-initiated detach (sidebar / future context menu). */
+export function detachBank(uuid: string): boolean {
+  const list = getBanksSnapshot();
+  const bank = findByUuid(list, uuid);
+  if (!bank?.attachedToUuid) {
+    setStoreError('Bank is not attached to a parent.');
+    return false;
+  }
+
+  const formerParentUuid = bank.attachedToUuid;
+  const formerParent = findByUuid(list, formerParentUuid);
+  const n = detachBanksKeepingDisplay((b) => b.uuid === uuid, {
+    label: 'Detach bank',
+    historyUuids: [uuid],
+  });
+  if (n === 0) return false;
 
   clearError();
   log('store', 'detachBank', {
@@ -995,38 +650,18 @@ export function detachBank(uuid: string): boolean {
 }
 
 /**
- * Clear parent link — mirrors NonMaps `undockBank()` when dragging an attached bank.
- * History is recorded by the open canvas drag group (or one-shot if called alone).
- * Bakes display origin into stored x/y so the card does not jump off its on-screen spot.
+ * At bank-drag grab: sever every attachment edge that crosses the move-set
+ * boundary (exactly one endpoint in the set).
  */
-export function detachBankFromParent(uuid: string): boolean {
-  const list = getBanksSnapshot();
-  const bank = list.find((b) => b.uuid === uuid);
-  if (!bank?.attachedToUuid) return false;
-
-  const formerParentUuid = bank.attachedToUuid;
-  const formerParent = list.find((b) => b.uuid === formerParentUuid);
-
-  const apply = (): void => {
-    const current = getBanksSnapshot();
-    commitBanks(
-      mapDetachedKeepingDisplay(current, (b) => b.uuid === uuid),
-    );
-  };
-
-  if (isUndoGroupOpen()) {
-    apply();
-  } else {
-    recordLayoutAround('Detach bank', [uuid], apply);
-  }
-
-  log('store', 'detachOnDrag', {
-    uuid,
-    name: bank.name,
-    formerParentUuid,
-    formerParentName: formerParent?.name ?? null,
-  });
-  return true;
+export function detachBanksCrossingMoveSet(moveUuids: Iterable<string>): number {
+  const moveSet = new Set(moveUuids);
+  return detachBanksKeepingDisplay(
+    (b) => attachmentCrossesMoveSet(b, moveSet),
+    {
+      label: 'Detach for move',
+      historyUuids: [...moveSet],
+    },
+  );
 }
 
 /**
@@ -1053,12 +688,11 @@ export function deleteSelectedBanks(): boolean {
 
   const list = getBanksSnapshot();
   const names = uuids
-    .map((uuid) => list.find((b) => b.uuid === uuid)?.name)
+    .map((uuid) => findByUuid(list, uuid)?.name)
     .filter(Boolean);
   const message = `Delete ${uuids.length} selected banks (${names.join(', ')})? You can undo with the Undo button.`;
   if (!window.confirm(message)) return false;
 
-  // Bake display origins for orphans before parent uuids leave the list.
   const detached = mapDetachedKeepingDisplay(
     list,
     (b) => Boolean(b.attachedToUuid && uuids.includes(b.attachedToUuid)),
@@ -1079,15 +713,13 @@ export function deleteSelectedBanks(): boolean {
 
 export function deleteBank(uuid: string): boolean {
   const list = getBanksSnapshot();
-  const bank = list.find((b) => b.uuid === uuid);
+  const bank = findByUuid(list, uuid);
   if (!bank) return false;
 
   const message = `Delete "${bank.name}"? You can undo with the Undo button.`;
   if (!window.confirm(message)) return false;
 
   const childCount = list.filter((b) => b.attachedToUuid === uuid).length;
-  // Bake on-screen origin into stored x/y for children before removing the parent
-  // (attached placement ignores stored coords; plain detach would jump them).
   const detached = mapDetachedKeepingDisplay(
     list,
     (b) => b.attachedToUuid === uuid,
@@ -1126,28 +758,23 @@ export function deleteBank(uuid: string): boolean {
 }
 
 /**
- * Move a bank and its attachment subtree (children always follow).
+ * Move a bank and its move set (default: primary + attachment descendants).
  * Target (x, y) is the primary’s on-screen origin after the drag.
  * Δ is taken from the primary’s current **display** position (not stored XML).
- * Optional `moveUuids` overrides the default primary+descendants set.
- * `userDrag` undocks the primary if it still has a parent.
+ * Optional `moveUuids` overrides the default set.
+ *
+ * Undock is **not** performed here — canvas grab must call
+ * `detachBanksCrossingMoveSet` (boundary cut) before moving.
  */
 export function moveBankTo(
   uuid: string,
   x: number,
   y: number,
-  options: { userDrag?: boolean; moveUuids?: Iterable<string> } = {},
+  options: { moveUuids?: Iterable<string> } = {},
 ): void {
-  let list = getBanksSnapshot();
-  let bank = list.find((b) => b.uuid === uuid);
+  const list = getBanksSnapshot();
+  const bank = findByUuid(list, uuid);
   if (!bank) return;
-
-  if (options.userDrag && bank.attachedToUuid) {
-    detachBankFromParent(uuid);
-    list = getBanksSnapshot();
-    bank = list.find((b) => b.uuid === uuid);
-    if (!bank) return;
-  }
 
   const snappedX = snapToGrid(x);
   const snappedY = snapToGrid(y);
@@ -1158,7 +785,7 @@ export function moveBankTo(
 
   const apply = (): void => {
     const current = getBanksSnapshot();
-    const currentBank = current.find((b) => b.uuid === uuid);
+    const currentBank = findByUuid(current, uuid);
     if (!currentBank) return;
 
     const display = resolveDisplayPositions(current);
@@ -1193,7 +820,7 @@ export function moveBankTo(
 /** Set one bank's stored origin (no cluster move) — for layout/calibration tests. */
 export function setBankOrigin(uuid: string, x: number, y: number): boolean {
   const list = getBanksSnapshot();
-  const bank = list.find((b) => b.uuid === uuid);
+  const bank = findByUuid(list, uuid);
   if (!bank) return false;
 
   const snappedX = snapToGrid(x);
@@ -1212,16 +839,6 @@ export function setBankOrigin(uuid: string, x: number, y: number): boolean {
   return true;
 }
 
-export function setShowSynthZone(enabled: boolean): void {
-  appSettings.update((s) => ({ ...s, showSynthZone: enabled }));
-  log('store', 'setShowSynthZone', { enabled });
-}
-
-export function setShowDebugShapes(enabled: boolean): void {
-  appSettings.update((s) => ({ ...s, showDebugShapes: enabled }));
-  log('store', 'setShowDebugShapes', { enabled });
-}
-
 /** Snap all attached banks to recommended positions; clears user-positioned flags for them. */
 export function realignAttachedBanks(): number {
   const before = getBanksSnapshot();
@@ -1235,7 +852,7 @@ export function realignAttachedBanks(): number {
   let movedCount = 0;
 
   for (const bank of realigned) {
-    const prev = before.find((b) => b.uuid === bank.uuid);
+    const prev = findByUuid(before, bank.uuid);
     if (prev && (prev.x !== bank.x || prev.y !== bank.y)) movedCount++;
   }
 
@@ -1254,274 +871,4 @@ export function realignAttachedBanks(): number {
   logPositionChanges('realign', 'positions changed by realign', before, realigned);
   log('store', 'realignAttachedBanks summary', { movedCount });
   return movedCount;
-}
-
-function pad2(value: number): string {
-  return String(value).padStart(2, '0');
-}
-
-/** Default `.nlbackup` filename matching C15 export naming. */
-export function buildDefaultExportFilename(date = new Date()): string {
-  const stamp = `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}-${pad2(date.getHours())}-${pad2(date.getMinutes())}`;
-  return `${stamp}-nonlinear-c15-banks.nlbackup`;
-}
-
-/** Serialize current banks to gzip `.nlbackup` and trigger a browser download. */
-export function exportBackup(options: { filename?: string } = {}): boolean {
-  const list = getBanksSnapshot();
-  if (list.length === 0) {
-    setStoreError('No banks to export.');
-    return false;
-  }
-
-  const warnings = validateBanksForC15Export(list);
-  if (warnings.length > 0) {
-    const proceed = window.confirm(
-      `Export warnings:\n\n${warnings.join('\n')}\n\nContinue export anyway?`,
-    );
-    if (!proceed) return false;
-  }
-
-  const suggested = buildDefaultExportFilename();
-  let rawFilename = options.filename;
-  if (!rawFilename) {
-    const chosen = window.prompt('Save backup as:', suggested);
-    if (chosen === null) return false;
-    rawFilename = chosen;
-  }
-
-  const meta = get(bankMeta);
-
-  try {
-    const filename = sanitizeBackupFilename(rawFilename);
-    const serializeDate = formatSerializeDate();
-    const xml = serializePresetManagerXml({
-      banks: list,
-      serializeDate,
-      selectedBankUuid: getPrimarySelectedUuid() ?? list[0]!.uuid,
-      selectedMidiBankUuid: meta.selectedMidiBankUuid,
-    });
-    const bytes = compressString(xml);
-
-    downloadBytes(bytes, filename);
-    clearSessionDirty();
-    bankMeta.update((m) => ({ ...m, error: null }));
-    log('export', 'exportBackup ok', {
-      filename,
-      bankCount: list.length,
-      byteLength: bytes.length,
-      warnings,
-    });
-    return true;
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    setStoreError(message);
-    log('export', 'exportBackup failed', message, 'error');
-    return false;
-  }
-}
-
-export async function importFile(file: File): Promise<void> {
-  bankMeta.update((m) => ({
-    ...m,
-    loading: true,
-    error: null,
-    lastImportFilename: file.name,
-  }));
-  log('import', 'importFile started', { name: file.name, size: file.size });
-
-  try {
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    const doc = parseFileBytes(bytes, file.name);
-    log('import', 'parse complete', { source: doc.source, bankCount: doc.banks.length });
-    logPositionSnapshot('import', 'positions from parser (pre-heal)', doc.banks);
-
-    if (doc.source === 'single-bank') {
-      const canvas = getCanvasScreenSize();
-      log('import', '========== SINGLE-BANK VIEWPORT CHECK BEGIN ==========');
-
-      const baseline = buildSingleBankViewportCheck(
-        doc.banks,
-        viewport,
-        'xml-original',
-        file.name,
-        canvas,
-      );
-      if (baseline) logSingleBankViewportCheck(baseline);
-
-      const positioned = positionBanksAtViewportCenter(doc.banks, viewport);
-      logPositionSnapshot('import', 'single-bank at viewport center (pre-heal)', positioned);
-
-      const placed = buildSingleBankViewportCheck(
-        positioned,
-        viewport,
-        'after-viewport-placement',
-        file.name,
-        canvas,
-      );
-      if (placed) logSingleBankViewportCheck(placed);
-
-      const beforeUuids = new Set(getBanksSnapshot().map((bank) => bank.uuid));
-      mergeBanks(positioned, doc, { preserveIncomingPositions: true });
-
-      const stored = getBanksSnapshot().filter((bank) => !beforeUuids.has(bank.uuid));
-      const finalCheck = buildSingleBankViewportCheck(
-        stored.length > 0 ? stored : positioned,
-        viewport,
-        'after-store',
-        file.name,
-        canvas,
-      );
-      if (finalCheck) logSingleBankViewportCheck(finalCheck);
-
-      log('import', '========== SINGLE-BANK VIEWPORT CHECK END ==========', {
-        centered: finalCheck?.centered ?? placed?.centered ?? false,
-        file: file.name,
-        bank: doc.banks[0]?.name ?? '(unknown)',
-      });
-    } else {
-      applyDocument(doc);
-    }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    bankMeta.update((m) => ({ ...m, error: message }));
-    log('import', 'importFile failed', message, 'error');
-  } finally {
-    const count = getBanksSnapshot().length;
-    bankMeta.update((m) => ({ ...m, loading: false }));
-    log('import', 'importFile finished', { bankCount: count, loading: false });
-  }
-}
-
-/** Legacy sequential folder import (small folders only). */
-export async function importFolderFilesLegacy(files: ImportableFile[]): Promise<void> {
-  if (files.length === 0) {
-    bankMeta.update((m) => ({ ...m, error: 'No .xml or .nlbackup files found in folder' }));
-    log('import', 'folder import — no files', null, 'warn');
-    return;
-  }
-
-  bankMeta.update((m) => ({ ...m, loading: true, error: null }));
-  log('import', 'importFolder legacy started', { fileCount: files.length });
-
-  const errors: string[] = [];
-  let succeeded = 0;
-
-  try {
-    for (const entry of files) {
-      try {
-        const bytes = new Uint8Array(await entry.file.arrayBuffer());
-        const doc = parseFileBytes(bytes, entry.file.name);
-        applyDocument(doc);
-        succeeded++;
-        log('import', 'folder file ok', { name: entry.file.name, bankCount: doc.banks.length });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        errors.push(`${entry.file.name}: ${message}`);
-        log('import', 'folder file failed', message, 'error');
-      }
-    }
-
-    const folderName = folderLabelFromImportable(files);
-    bankMeta.update((m) => ({
-      ...m,
-      lastImportFilename: `${folderName} (${succeeded}/${files.length} files)`,
-      lastImportMode: 'folder',
-      error:
-        succeeded === 0
-          ? errors.join('; ')
-          : errors.length > 0
-            ? `Imported ${succeeded} of ${files.length} files. Failed: ${errors.join('; ')}`
-            : null,
-    }));
-
-    log('import', 'importFolder legacy finished', {
-      bankCount: getBanksSnapshot().length,
-      succeeded,
-      failed: errors.length,
-    });
-  } finally {
-    bankMeta.update((m) => ({ ...m, loading: false }));
-  }
-}
-
-export async function executeMassImport(
-  files: ImportableFile[],
-  options: MassImportOptions,
-  onProgress?: (done: number, total: number) => void,
-): Promise<MassImportResult> {
-  bankMeta.update((m) => ({ ...m, loading: true, error: null }));
-  log('import', 'massImport started', {
-    fileCount: files.length,
-    canvasMode: options.canvasMode,
-    sortBy: options.sortBy,
-  });
-
-  try {
-    if (options.canvasMode === 'replace') {
-      banks.set([]);
-      clearUserPositioned();
-      bankMeta.update((m) => ({
-        ...m,
-        selectedBankUuids: [],
-        selectedPresetUuids: [],
-        presetSelectionBankUuid: null,
-      }));
-    }
-
-    const existing = options.canvasMode === 'replace' ? [] : getBanksSnapshot();
-    const { banks: finalBanks, result, layoutMeta } = await runMassImportPipeline(
-      files,
-      options,
-      existing,
-      onProgress,
-    );
-
-    banks.set(finalBanks);
-    clearHistory();
-    markSessionDirty();
-    setShowSynthZone(options.showSynthZone);
-
-    const importedUuids = new Set(layoutMeta.keys());
-    const importedBanks = finalBanks.filter((b) => importedUuids.has(b.uuid));
-    const report = buildLayoutImportReport(
-      importedBanks,
-      layoutMeta,
-      options.sortBy,
-    );
-    logLayoutImportReport(report);
-
-    const folderName = folderLabelFromImportable(files);
-    bankMeta.update((m) => ({
-      ...m,
-      lastImportFilename: `${folderName} (${result.succeeded}/${files.length} files)`,
-      lastImportMode: options.canvasMode === 'replace' ? 'replace' : 'merge',
-      error:
-        result.succeeded === 0
-          ? result.errors.join('; ')
-          : result.errors.length > 0
-            ? `Imported ${result.succeeded} of ${files.length} files. Failed: ${result.errors.join('; ')}`
-            : null,
-    }));
-
-    log('import', 'massImport finished', {
-      bankCount: finalBanks.length,
-      succeeded: result.succeeded,
-      failed: result.failed,
-    });
-
-    return result;
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    bankMeta.update((m) => ({ ...m, error: message }));
-    log('import', 'massImport failed', message, 'error');
-    throw err;
-  } finally {
-    bankMeta.update((m) => ({ ...m, loading: false }));
-  }
-}
-
-/** @deprecated Use executeMassImport or importFolderFilesLegacy */
-export async function importFolderFiles(files: File[]): Promise<void> {
-  await importFolderFilesLegacy(toImportableFiles(files));
 }

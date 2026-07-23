@@ -5,6 +5,7 @@
   import Canvas from './components/Canvas.svelte';
   import StatusBar from './components/StatusBar.svelte';
   import DebugLogPanel from './components/DebugLogPanel.svelte';
+  import { isAppDebugEnabled } from './lib/debug/debugFlags';
   import { shouldIgnoreKeyboardShortcut } from './lib/keyboard';
   import {
     bankMeta,
@@ -100,5 +101,7 @@
   </div>
 
   <StatusBar />
-  <DebugLogPanel />
+  {#if isAppDebugEnabled()}
+    <DebugLogPanel />
+  {/if}
 </div>

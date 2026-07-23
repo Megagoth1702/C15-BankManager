@@ -16,7 +16,11 @@
     canUndo,
     createBank,
     executeMassImport,
-    exportBackup,
+    exportAllAsBackup,
+    exportSelectedBanks,
+    exportSelectedBanksAsXml,
+    exportSelectedBanksAsXmlLabel,
+    exportSelectedBanksLabel,
     importFile,
     importFolderFilesLegacy,
     realignAttachedBanks,
@@ -32,6 +36,7 @@
   let exportMessage = $state<string | null>(null);
   let realignTimer: ReturnType<typeof setTimeout> | undefined;
   let exportTimer: ReturnType<typeof setTimeout> | undefined;
+  let exportMenuOpen = $state(false);
 
   /** Debug shapes toggle is a power-user control: only visible while Ctrl/Meta+Shift are held. */
   let debugShapesShortcutHeld = $state(false);
@@ -67,6 +72,9 @@
   const attachedCount = $derived(countAttachedBanks($banks));
   const canRealign = $derived($banks.length > 0 && attachedCount > 0 && !$bankMeta.loading);
   const canExport = $derived($banks.length > 0 && !$bankMeta.loading);
+  const selectedBankCount = $derived($bankMeta.selectedBankUuids.length);
+  const selectedExportLabel = $derived(exportSelectedBanksLabel(selectedBankCount));
+  const selectedXmlExportLabel = $derived(exportSelectedBanksAsXmlLabel(selectedBankCount));
 
   let fileInput: HTMLInputElement;
   let folderInput: HTMLInputElement;
@@ -188,18 +196,67 @@
     }, 2500);
   }
 
-  function handleExport(): void {
-    if (exportBackup()) {
+  function closeExportMenu(): void {
+    exportMenuOpen = false;
+  }
+
+  function toggleExportMenu(event: MouseEvent): void {
+    event.stopPropagation();
+    if (!canExport) return;
+    exportMenuOpen = !exportMenuOpen;
+  }
+
+  function handleExportAll(): void {
+    closeExportMenu();
+    if (exportAllAsBackup()) {
       showExportFeedback('Backup downloaded');
+    }
+  }
+
+  function handleExportSelected(): void {
+    closeExportMenu();
+    if (exportSelectedBanks()) {
+      showExportFeedback(
+        selectedBankCount === 1
+          ? '1 bank backup downloaded'
+          : `${selectedBankCount} banks backup downloaded`,
+      );
+    }
+  }
+
+  async function handleExportSelectedAsXml(): Promise<void> {
+    closeExportMenu();
+    const result = await Promise.resolve(exportSelectedBanksAsXml());
+    if (result) {
+      showExportFeedback(
+        selectedBankCount === 1
+          ? '1 bank XML downloaded'
+          : `${selectedBankCount} bank XMLs downloaded`,
+      );
+    }
+  }
+
+  function onWindowClick(): void {
+    if (exportMenuOpen) closeExportMenu();
+  }
+
+  function onExportMenuKeyDown(event: KeyboardEvent): void {
+    if (event.key === 'Escape' && exportMenuOpen) {
+      event.preventDefault();
+      closeExportMenu();
     }
   }
 
 </script>
 
 <svelte:window
-  onkeydown={onWindowKeyDown}
+  onkeydown={(e) => {
+    onWindowKeyDown(e);
+    onExportMenuKeyDown(e);
+  }}
   onkeyup={onWindowKeyUp}
   onblur={onWindowBlur}
+  onclick={onWindowClick}
 />
 
 <header
@@ -266,15 +323,51 @@
       {#if realignMessage}
         <span class="text-xs text-c15-accent">{realignMessage}</span>
       {/if}
-      <button
-        type="button"
-        class="rounded border border-c15-border bg-c15-surface-raised px-3 py-1.5 text-xs text-c15-text transition-colors hover:border-c15-accent hover:text-c15-accent disabled:cursor-not-allowed disabled:opacity-50"
-        disabled={!canExport}
-        title="Download .nlbackup (gzip XML)"
-        onclick={handleExport}
-      >
-        Export
-      </button>
+      <div class="relative">
+        <button
+          type="button"
+          class="rounded border border-c15-border bg-c15-surface-raised px-3 py-1.5 text-xs text-c15-text transition-colors hover:border-c15-accent hover:text-c15-accent disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={!canExport}
+          title="Export .nlbackup backup or single-bank .xml files"
+          aria-haspopup="menu"
+          aria-expanded={exportMenuOpen}
+          onclick={toggleExportMenu}
+        >
+          Export ▾
+        </button>
+        {#if exportMenuOpen}
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div
+            class="absolute right-0 top-full z-30 mt-1 min-w-[240px] rounded border border-c15-border bg-c15-surface-raised py-1 shadow-lg"
+            onclick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              class="w-full px-3 py-1.5 text-left text-xs text-c15-text transition-colors hover:bg-c15-surface hover:text-c15-accent"
+              onclick={handleExportAll}
+            >
+              Export all as backup
+            </button>
+            {#if selectedBankCount > 0}
+              <button
+                type="button"
+                class="w-full px-3 py-1.5 text-left text-xs text-c15-text transition-colors hover:bg-c15-surface hover:text-c15-accent"
+                onclick={handleExportSelected}
+              >
+                {selectedExportLabel}
+              </button>
+              <button
+                type="button"
+                class="w-full px-3 py-1.5 text-left text-xs text-c15-text transition-colors hover:bg-c15-surface hover:text-c15-accent"
+                onclick={handleExportSelectedAsXml}
+              >
+                {selectedXmlExportLabel}
+              </button>
+            {/if}
+          </div>
+        {/if}
+      </div>
       {#if exportMessage}
         <span class="text-xs text-c15-accent">{exportMessage}</span>
       {/if}

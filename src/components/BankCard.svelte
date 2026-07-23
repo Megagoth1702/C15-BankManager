@@ -7,6 +7,9 @@
     bankOuterWidth,
     effectiveFacingWidth,
   } from '../lib/canvas/geometry';
+  import {
+    dockEdgeHighlightBarStyle,
+  } from '../lib/canvas/bankCardChrome';
   import { insertLineInnerY } from '../lib/canvas/presetDragHitTest';
   import { presetColorFromRawXml } from '../lib/canvas/presetColors';
 
@@ -17,6 +20,11 @@
     renameBank,
     renamePreset,
   } from '../lib/model/bankStore';
+  import { resolvePresetUuidsForAction } from '../lib/model/presetSelection';
+  import {
+    selTrace,
+    selTracePointer,
+  } from '../lib/debug/selectionTrace';
   import { focusRenameInput } from '../lib/ui/focusRenameInput';
   import { portalBody } from '../lib/ui/portalBody';
   import type { DockEdge } from '../lib/model/attachOperation';
@@ -30,7 +38,7 @@
     index: number;
     selected?: boolean;
     userPositioned?: boolean;
-    viewportZoom?: number;
+
     dragDisabled?: boolean;
     attachDropTarget?: boolean;
     dockEdgeHighlight?: DockEdge | null;
@@ -38,6 +46,8 @@
     showAttachSlots?: boolean;
     presetDropHighlight?: boolean;
     presetInsertIndex?: number | null;
+    /** Live bank-drag chrome (owned by Canvas window gesture). */
+    dragging?: boolean;
     onpresetpointerdown?: (
       bankUuid: string,
       presetUuids: string[],
@@ -49,20 +59,17 @@
       presetUuid: string,
       event: MouseEvent,
     ) => void;
-    onselect?: (uuid: string, event: MouseEvent) => void;
-    /** Fired on pointer-up without drag (plain click selection). */
-    onclickselect?: (uuid: string, event: MouseEvent) => void;
-    onmove?: (uuid: string, x: number, y: number, userDrag: boolean) => void;
-    /** First drag frame — parent records cursor grab offset in C15 space. */
-    ondraggrab?: (info: {
+    /**
+     * Bank drag/select gesture start — Canvas tracks move/up on window.
+     * Do not use setPointerCapture here — Canvas captures on the stable root.
+     */
+    onbankpointerdown?: (info: {
       clientX: number;
       clientY: number;
       originX: number;
       originY: number;
-      userDrag: boolean;
       pointerId: number;
     }) => void;
-    ondragend?: () => void;
   }
 
   let {
@@ -72,30 +79,19 @@
     index,
     selected = false,
     userPositioned = false,
-    viewportZoom = 1,
+
     dragDisabled = false,
     attachDropTarget = false,
     dockEdgeHighlight = null,
     showAttachSlots = false,
     presetDropHighlight = false,
     presetInsertIndex = null,
+    dragging = false,
     onpresetpointerdown,
     onpresetcontextmenu,
-    onselect,
-    onclickselect,
-    onmove,
-    ondraggrab,
-    ondragend,
+    onbankpointerdown,
   }: Props = $props();
 
-  const DRAG_THRESHOLD_PX = 3;
-
-  let pointerActive = $state(false);
-  let dragging = $state(false);
-  let pointerDownScreen = { x: 0, y: 0 };
-  /** Display origin at pointer-down — avoids snap when stored coords differ from layoutSlaves. */
-  let dragOriginDisplay = { x: 0, y: 0 };
-  let wasAttachedAtDragStart = false;
   let bankRenameDraft = $state('');
   let presetRenameDraft = $state('');
   let commentTooltip = $state<{ text: string; x: number; y: number } | null>(null);
@@ -238,27 +234,62 @@
     return selectedPresetUuid === uuid.toLowerCase();
   }
 
-  function handleHeaderClick(event: MouseEvent): void {
-    event.stopPropagation();
-    onselect?.(bank.uuid, event);
+  function presetsToMove(clickedUuid: string): string[] {
+    return resolvePresetUuidsForAction(bank.uuid, clickedUuid, $bankMeta);
   }
 
-  function presetsToMove(clickedUuid: string): string[] {
-    if (
-      $bankMeta.presetSelectionBankUuid === bank.uuid &&
-      $bankMeta.selectedPresetUuids.length > 0
-    ) {
-      const needle = clickedUuid.toLowerCase();
-      if ($bankMeta.selectedPresetUuids.some((u) => u.toLowerCase() === needle)) {
-        return $bankMeta.selectedPresetUuids;
-      }
-    }
-    return [clickedUuid];
+  /**
+   * When ≥2 banks are multi-selected, a plain press on a selected bank's body
+   * starts bank multi-drag (same as header). Ctrl/Shift still open the preset path.
+   */
+  function shouldBankDragFromPresetBody(event: PointerEvent): boolean {
+    if (isRenamingBank || dragDisabled) return false;
+    if (event.ctrlKey || event.metaKey || event.shiftKey) return false;
+    const selectedBanks = $bankMeta.selectedBankUuids;
+    return selectedBanks.length >= 2 && selectedBanks.includes(bank.uuid);
+  }
+
+  function emitBankPointerDown(event: PointerEvent, source: string): void {
+    // stopPropagation: do not start canvas pan/marquee.
+    // preventDefault: reduce UA pan/scroll/drag that fires pointercancel on grab re-render.
+    event.stopPropagation();
+    event.preventDefault();
+    selTracePointer('bankcard.bank-pointerdown', event, {
+      source,
+      bankUuid: bank.uuid.slice(0, 8),
+      bankName: bank.name,
+      selectedProp: selected,
+      dragDisabled,
+      isRenamingBank,
+    });
+    onbankpointerdown?.({
+      clientX: event.clientX,
+      clientY: event.clientY,
+      originX: displayX,
+      originY: displayY,
+      pointerId: event.pointerId,
+    });
   }
 
   function onPresetPointerDown(uuid: string, event: PointerEvent): void {
     if (event.button !== 0) return;
     event.stopPropagation();
+    const bodyBankDrag = shouldBankDragFromPresetBody(event);
+    selTracePointer('bankcard.preset-down', event, {
+      bankUuid: bank.uuid.slice(0, 8),
+      bankName: bank.name,
+      presetUuid: uuid.slice(0, 8),
+      selectedProp: selected,
+      bodyBankDrag,
+      selectedBankCount: $bankMeta.selectedBankUuids.length,
+      bankInSelection: $bankMeta.selectedBankUuids.includes(bank.uuid),
+      dragDisabled,
+      isRenamingBank,
+    });
+    if (bodyBankDrag) {
+      emitBankPointerDown(event, 'preset-body-multiselect');
+      return;
+    }
     onpresetpointerdown?.(bank.uuid, presetsToMove(uuid), uuid, event);
   }
 
@@ -289,52 +320,21 @@
   }
 
   function onHeaderPointerDown(event: PointerEvent): void {
-    if (isRenamingBank || dragDisabled || event.button !== 0) return;
-    if ((event.target as HTMLElement).closest('[data-attach-handle]')) return;
-    event.stopPropagation();
-    const target = event.currentTarget as HTMLElement | null;
-    target?.setPointerCapture(event.pointerId);
-    pointerActive = true;
-    dragging = false;
-    pointerDownScreen = { x: event.clientX, y: event.clientY };
-    dragOriginDisplay = { x: displayX, y: displayY };
-    wasAttachedAtDragStart = Boolean(bank.attachedToUuid);
-    onselect?.(bank.uuid, event as unknown as MouseEvent);
-  }
-
-  function onHeaderPointerMove(event: PointerEvent): void {
-    if (!pointerActive) return;
-    event.stopPropagation();
-
-    if (!dragging) {
-      const totalDx = event.clientX - pointerDownScreen.x;
-      const totalDy = event.clientY - pointerDownScreen.y;
-      if (Math.hypot(totalDx, totalDy) < DRAG_THRESHOLD_PX) return;
-      dragging = true;
-      ondraggrab?.({
-        clientX: event.clientX,
-        clientY: event.clientY,
-        originX: dragOriginDisplay.x,
-        originY: dragOriginDisplay.y,
-        userDrag: wasAttachedAtDragStart,
-        pointerId: event.pointerId,
+    if (isRenamingBank || dragDisabled || event.button !== 0) {
+      selTrace('bankcard.header-down-ignored', {
+        bankUuid: bank.uuid.slice(0, 8),
+        bankName: bank.name,
+        reason: isRenamingBank
+          ? 'renaming'
+          : dragDisabled
+            ? 'dragDisabled'
+            : `button=${event.button}`,
+        selectedProp: selected,
+        selectedBankCount: $bankMeta.selectedBankUuids.length,
       });
+      return;
     }
-  }
-
-  function onHeaderPointerUp(event: PointerEvent): void {
-    if (!pointerActive) return;
-    event.stopPropagation();
-    const wasDragging = dragging;
-    pointerActive = false;
-    dragging = false;
-    if (wasDragging) {
-      ondragend?.();
-    } else {
-      onclickselect?.(bank.uuid, event as unknown as MouseEvent);
-    }
-    const target = event.currentTarget as HTMLElement | null;
-    target?.releasePointerCapture(event.pointerId);
+    emitBankPointerDown(event, 'header');
   }
 
   const bodyRingClass = $derived(
@@ -389,17 +389,14 @@
   {/if}
 
   {#if dockEdgeHighlight}
-    {@const dockStyle =
-      dockEdgeHighlight === 'west'
-        ? `left:0;top:${chromeTopPx}px;width:${dockHighlightPx}px;height:${innerH}px`
-        : dockEdgeHighlight === 'east'
-          ? `left:${placementW - dockHighlightPx}px;top:${chromeTopPx}px;width:${dockHighlightPx}px;height:${innerH}px`
-          : dockEdgeHighlight === 'north'
-            ? `left:0;top:0;width:${placementW}px;height:${dockHighlightPx}px`
-            : `left:0;top:${chromeTopPx + innerH}px;width:${placementW}px;height:${dockHighlightPx}px`}
     <div
       class="pointer-events-none absolute z-20 bg-cyan-400/80"
-      style={dockStyle}
+      style={dockEdgeHighlightBarStyle(dockEdgeHighlight, {
+        placementW,
+        chromeTopPx,
+        innerH,
+        dockHighlightPx,
+      })}
     ></div>
   {/if}
 
@@ -442,10 +439,10 @@
       hidePresetCommentTooltip();
     }}
   >
-    <!-- Header: drag handle + bank selection -->
+    <!-- Header: drag handle + bank selection (canvas owns capture + move/up) -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
-      class="flex shrink-0 items-center border-b border-black/20
+      class="flex shrink-0 items-center border-b border-black/20 touch-none
         {dragging ? 'cursor-grabbing' : 'cursor-grab'}"
       style:height="{headerPx}px"
       style:min-height="{headerPx}px"
@@ -453,11 +450,7 @@
       style:padding-right="{innerMarginPx}px"
       style:background-color="{headerBg}"
       data-bank-header-drop={bank.uuid}
-      onclick={handleHeaderClick}
       onpointerdown={onHeaderPointerDown}
-      onpointermove={onHeaderPointerMove}
-      onpointerup={onHeaderPointerUp}
-      onpointercancel={onHeaderPointerUp}
     >
       {#if isRenamingBank}
         <input
@@ -573,7 +566,7 @@
                 style:font-size="{12 * scale}px"
                 style:padding-right="{comment && !isRenamingPreset ? 10 * scale : 0}px"
               >
-                {label || '·'}
+                {label || '—'}
               </span>
             {/if}
             {#if comment && !isRenamingPreset}
@@ -583,16 +576,18 @@
                 data-preset-comment="true"
                 class="absolute z-[50] flex cursor-default items-center justify-center font-bold leading-none text-yellow-400"
                 style:right="{1 * scale}px"
-                style:top="{0}px"
+                style:top="0"
                 style:width="{12 * scale}px"
-                style:height="{12 * scale}px"
-                style:font-size="{9 * scale}px"
-                aria-label="Has comment: {comment}"
+                style:height="{rowPx}px"
+                style:font-size="{10 * scale}px"
+                title="Comment"
                 onpointerenter={(e) => showPresetCommentTooltip(comment, e)}
                 onpointermove={movePresetCommentTooltip}
                 onpointerleave={hidePresetCommentTooltip}
                 onpointerdown={(e) => e.stopPropagation()}
-              >C</button>
+              >
+                C
+              </button>
             {/if}
           </div>
         {/each}
@@ -604,14 +599,14 @@
     <div
       use:portalBody
       class="pointer-events-none fixed z-[9999] max-w-[260px] overflow-hidden rounded-md border border-yellow-400/50 bg-c15-surface-raised shadow-[0_4px_16px_rgba(0,0,0,0.45)]"
-      style:left="{commentTooltip.x}px"
-      style:top="{commentTooltip.y}px"
+      style:left="{commentTooltip.x + 12}px"
+      style:top="{commentTooltip.y + 12}px"
       role="tooltip"
     >
       <div
-        class="border-b border-yellow-400/30 bg-yellow-400/10 px-2.5 py-1 text-xs font-semibold tracking-wide text-yellow-400"
+        class="border-b border-c15-border/80 bg-c15-surface px-2.5 py-1 text-xs font-semibold tracking-wide text-yellow-400/90"
       >
-        Comment:
+        Comment
       </div>
       <div class="px-2.5 py-1.5 text-xs leading-relaxed text-c15-text">
         {commentTooltip.text}

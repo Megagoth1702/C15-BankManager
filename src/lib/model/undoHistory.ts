@@ -427,6 +427,22 @@ export function beginUndoGroup(label: string, bankUuids: readonly string[]): voi
 }
 
 /**
+ * Add banks to an open layout group (e.g. proximity-dock target discovered at release).
+ * Captures current layout as the "before" for newly tracked uuids only.
+ */
+export function expandOpenUndoGroupUuids(extraUuids: readonly string[]): void {
+  if (!openGroup || historySuspended) return;
+  const existing = new Set(openGroup.uuids);
+  const toAdd = [...new Set(extraUuids)].filter((u) => !existing.has(u));
+  if (toAdd.length === 0) return;
+  openGroup.uuids = [...openGroup.uuids, ...toAdd];
+  openGroup.before = [
+    ...openGroup.before,
+    ...captureBankLayoutFromStore(toAdd),
+  ];
+}
+
+/**
  * Close group and push one bank-layout entry if layout changed for tracked banks.
  * Also re-captures any of the original UUIDs still present (positions/attach after dock).
  */

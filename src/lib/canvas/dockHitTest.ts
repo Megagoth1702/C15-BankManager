@@ -20,6 +20,12 @@ export interface DockHit {
   dockEdge: DockEdge;
 }
 
+/** Dock hit where the approaching bank is a member of a multi-bank drag cluster. */
+export interface ClusterDockHit extends DockHit {
+  /** Cluster bank whose corridor overlapped the target (may ≠ pointer primary). */
+  memberUuid: string;
+}
+
 /**
  * Complementary attach-corridor pairs only (L↔R, T↔B).
  * Tapes and outer proximity never participate.
@@ -72,12 +78,25 @@ export interface DockHitTestOptions {
   excludeClusterUuids?: ReadonlySet<string>;
 }
 
-export function findDockTargetForDraggedBank(
+type ScoredDockHit = DockHit & { area: number; distSq: number };
+
+function isBetterScore(
+  candidate: { area: number; distSq: number },
+  best: { area: number; distSq: number } | null,
+): boolean {
+  if (!best) return true;
+  return (
+    candidate.area > best.area ||
+    (candidate.area === best.area && candidate.distSq < best.distSq)
+  );
+}
+
+function findDockTargetForDraggedBankScored(
   banks: Bank[],
   draggedBank: Bank,
   displayByUuid: DisplayPositionMap,
   options: DockHitTestOptions = {},
-): DockHit | null {
+): ScoredDockHit | null {
   const draggedUuid = options.excludeUuid ?? draggedBank.uuid;
   const draggedOrigin = getDisplayPosition(draggedBank, displayByUuid);
   const draggedCorridors = attachCorridorsForBank(
@@ -86,7 +105,7 @@ export function findDockTargetForDraggedBank(
     draggedOrigin.y,
   );
 
-  let best: (DockHit & { area: number; distSq: number }) | null = null;
+  let best: ScoredDockHit | null = null;
 
   for (const target of banks) {
     if (target.uuid === draggedUuid) continue;
@@ -114,30 +133,89 @@ export function findDockTargetForDraggedBank(
       const dy = ca.y - cb.y;
       const distSq = dx * dx + dy * dy;
 
-      const better =
-        !best ||
-        area > best.area ||
-        (area === best.area && distSq < best.distSq);
+      if (!isBetterScore({ area, distSq }, best)) continue;
 
-      if (better) {
-        best = {
-          target,
-          dockEdge: pair.dockEdge,
-          highlightEdge: highlightEdgeForDockEdge(pair.dockEdge),
-          draggedHighlightEdge: pair.draggedHighlightEdge,
-          area,
-          distSq,
-        };
-      }
+      best = {
+        target,
+        dockEdge: pair.dockEdge,
+        highlightEdge: highlightEdgeForDockEdge(pair.dockEdge),
+        draggedHighlightEdge: pair.draggedHighlightEdge,
+        area,
+        distSq,
+      };
     }
   }
 
-  return best
-    ? {
-        target: best.target,
-        dockEdge: best.dockEdge,
-        highlightEdge: best.highlightEdge,
-        draggedHighlightEdge: best.draggedHighlightEdge,
-      }
-    : null;
+  return best;
+}
+
+function toDockHit(scored: ScoredDockHit): DockHit {
+  return {
+    target: scored.target,
+    dockEdge: scored.dockEdge,
+    highlightEdge: scored.highlightEdge,
+    draggedHighlightEdge: scored.draggedHighlightEdge,
+  };
+}
+
+export function findDockTargetForDraggedBank(
+  banks: Bank[],
+  draggedBank: Bank,
+  displayByUuid: DisplayPositionMap,
+  options: DockHitTestOptions = {},
+): DockHit | null {
+  const scored = findDockTargetForDraggedBankScored(
+    banks,
+    draggedBank,
+    displayByUuid,
+    options,
+  );
+  return scored ? toDockHit(scored) : null;
+}
+
+/**
+ * Best complementary-corridor dock for any bank in a translating drag cluster.
+ * Targets inside the cluster are never chosen.
+ */
+export function findDockTargetForDragCluster(
+  banks: Bank[],
+  memberUuids: ReadonlySet<string> | readonly string[],
+  displayByUuid: DisplayPositionMap,
+  options: Omit<DockHitTestOptions, 'excludeUuid'> = {},
+): ClusterDockHit | null {
+  const members =
+    memberUuids instanceof Set ? memberUuids : new Set(memberUuids);
+  if (members.size === 0) return null;
+
+  const excludeCluster = options.excludeClusterUuids ?? members;
+  const byUuid = new Map(banks.map((b) => [b.uuid, b]));
+
+  let best: (ScoredDockHit & { memberUuid: string }) | null = null;
+
+  for (const memberUuid of members) {
+    const member = byUuid.get(memberUuid);
+    if (!member) continue;
+
+    const scored = findDockTargetForDraggedBankScored(
+      banks,
+      member,
+      displayByUuid,
+      {
+        ...options,
+        excludeUuid: memberUuid,
+        excludeClusterUuids: excludeCluster,
+      },
+    );
+    if (!scored) continue;
+    if (!isBetterScore(scored, best)) continue;
+
+    best = { ...scored, memberUuid };
+  }
+
+  if (!best) return null;
+
+  return {
+    ...toDockHit(best),
+    memberUuid: best.memberUuid,
+  };
 }

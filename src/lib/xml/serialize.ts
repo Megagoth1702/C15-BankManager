@@ -13,6 +13,16 @@ export interface SerializePresetManagerInput {
   selectedMidiBankUuid?: string;
 }
 
+export interface SerializeSingleBankOptions {
+  /** Override serialize date (default: now, ISO without ms). */
+  serializeDate?: string;
+  /**
+   * Attribute values merged over `bank.attributes` for this write only
+   * (e.g. Date/Name of Export File). Does not mutate the bank.
+   */
+  attributeOverrides?: Record<string, string>;
+}
+
 function escapeXml(text: string): string {
   return text
     .replace(/&/g, '&amp;')
@@ -59,41 +69,81 @@ function serializePresetBlocks(bank: Bank): string[] {
   return lines;
 }
 
-function serializeBank(bank: Bank, serializeDate: string): string {
+/**
+ * Serialize one bank's body fields + presets.
+ * @param contentIndent Number of spaces for direct children of `<bank>`.
+ * @param attributes Effective attribute map for this write.
+ */
+function serializeBankBody(
+  bank: Bank,
+  serializeDate: string,
+  contentIndent: number,
+  attributes: Record<string, string>,
+): string[] {
+  const pad = ' '.repeat(contentIndent);
+  const padChild = ' '.repeat(contentIndent + 1);
   const lines: string[] = [];
   const attachment = serializeAttachmentFields(bank);
 
-  lines.push(' <bank>');
-  lines.push(`  <bank-serialize-date>${bank.bankSerializeDate || serializeDate}</bank-serialize-date>`);
-  lines.push(`  <name>${escapeXml(bank.name)}</name>`);
-  lines.push(`  <uuid>${bank.uuid}</uuid>`);
-  lines.push(`  <x>${formatCoordForC15Xml(bank.x)}</x>`);
-  lines.push(`  <y>${formatCoordForC15Xml(bank.y)}</y>`);
-  lines.push(`  <selected-preset>${bank.selectedPreset}</selected-preset>`);
-  lines.push(`  <attached-to-bank>${attachment.attachedToUuid}</attached-to-bank>`);
-  lines.push(`  <attach-direction>${attachment.attachDirection}</attach-direction>`);
-  lines.push('  <preset-order>');
+  lines.push(`${pad}<bank-serialize-date>${bank.bankSerializeDate || serializeDate}</bank-serialize-date>`);
+  lines.push(`${pad}<name>${escapeXml(bank.name)}</name>`);
+  lines.push(`${pad}<uuid>${bank.uuid}</uuid>`);
+  lines.push(`${pad}<x>${formatCoordForC15Xml(bank.x)}</x>`);
+  lines.push(`${pad}<y>${formatCoordForC15Xml(bank.y)}</y>`);
+  lines.push(`${pad}<selected-preset>${bank.selectedPreset}</selected-preset>`);
+  lines.push(`${pad}<attached-to-bank>${attachment.attachedToUuid}</attached-to-bank>`);
+  lines.push(`${pad}<attach-direction>${attachment.attachDirection}</attach-direction>`);
+  lines.push(`${pad}<preset-order>`);
   for (const uuid of bank.presetOrder) {
-    lines.push(`   <uuid>${uuid}</uuid>`);
+    lines.push(`${padChild}<uuid>${uuid}</uuid>`);
   }
-  lines.push('  </preset-order>');
-  lines.push('  <attributes>');
-  for (const [name, value] of Object.entries(bank.attributes)) {
+  lines.push(`${pad}</preset-order>`);
+  lines.push(`${pad}<attributes>`);
+  for (const [name, value] of Object.entries(attributes)) {
     lines.push(
-      `   <attribute name="${escapeXmlAttr(name)}">${escapeXml(value)}</attribute>`,
+      `${padChild}<attribute name="${escapeXmlAttr(name)}">${escapeXml(value)}</attribute>`,
     );
   }
-  lines.push('  </attributes>');
+  lines.push(`${pad}</attributes>`);
   lines.push(
-    `  <last-changed-timestamp>${formatLastChangedTimestamp(bank.lastChangedTimestamp)}</last-changed-timestamp>`,
+    `${pad}<last-changed-timestamp>${formatLastChangedTimestamp(bank.lastChangedTimestamp)}</last-changed-timestamp>`,
   );
 
   for (const presetLine of serializePresetBlocks(bank)) {
     lines.push(presetLine);
   }
 
+  return lines;
+}
+
+/** Nested bank under `<preset-manager>` (no version attr; 1-space outer indent). */
+function serializeNestedBank(bank: Bank, serializeDate: string): string {
+  const lines: string[] = [];
+  lines.push(' <bank>');
+  lines.push(...serializeBankBody(bank, serializeDate, 2, bank.attributes));
   lines.push(' </bank>');
   return lines.join('\n');
+}
+
+/**
+ * Build a C15 single-bank export document: plain UTF-8 XML, root `<bank version="16">`.
+ * Exactly one bank — never wraps in `<preset-manager>`.
+ */
+export function serializeSingleBankXml(
+  bank: Bank,
+  options: SerializeSingleBankOptions = {},
+): string {
+  const serializeDate = options.serializeDate ?? formatSerializeDate();
+  const attributes = options.attributeOverrides
+    ? { ...bank.attributes, ...options.attributeOverrides }
+    : bank.attributes;
+
+  const lines: string[] = [
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><bank version="16">',
+    ...serializeBankBody(bank, serializeDate, 1, attributes),
+    '</bank>',
+  ];
+  return `${lines.join('\n')}\n`;
 }
 
 /** Build decompressed `<preset-manager>` XML from in-memory banks. */
@@ -118,7 +168,7 @@ export function serializePresetManagerXml(input: SerializePresetManagerInput): s
   ];
 
   for (const bank of banks) {
-    lines.push(serializeBank(bank, serializeDate));
+    lines.push(serializeNestedBank(bank, serializeDate));
   }
 
   lines.push('</preset-manager>');

@@ -7,7 +7,14 @@
     bankOuterWidth,
     effectiveFacingWidth,
   } from '../lib/canvas/geometry';
+  import {
+    dockEdgeHighlightBarStyle,
+  } from '../lib/canvas/bankCardChrome';
   import { portalBody } from '../lib/ui/portalBody';
+  import {
+    selTrace,
+    selTracePointer,
+  } from '../lib/debug/selectionTrace';
   import type { DockEdge } from '../lib/model/attachOperation';
   import type { Bank } from '../lib/types/bank';
 
@@ -21,19 +28,19 @@
     dragDisabled?: boolean;
     attachDropTarget?: boolean;
     dockEdgeHighlight?: DockEdge | null;
-    onselect?: (uuid: string, event: MouseEvent) => void;
-    /** Fired on pointer-up without drag (plain click selection). */
-    onclickselect?: (uuid: string, event: MouseEvent) => void;
-    ondraggrab?: (info: {
+    dragging?: boolean;
+    suppressNameTooltip?: boolean;
+    /**
+     * Bank drag/select gesture start — Canvas tracks move/up on window.
+     * No setPointerCapture here — Canvas captures on the stable root.
+     */
+    onbankpointerdown?: (info: {
       clientX: number;
       clientY: number;
       originX: number;
       originY: number;
-      userDrag: boolean;
       pointerId: number;
     }) => void;
-    ondragend?: () => void;
-    suppressNameTooltip?: boolean;
   }
 
   let {
@@ -47,13 +54,10 @@
     suppressNameTooltip = false,
     attachDropTarget = false,
     dockEdgeHighlight = null,
-    onselect,
-    onclickselect,
-    ondraggrab,
-    ondragend,
+    dragging = false,
+    onbankpointerdown,
   }: Props = $props();
 
-  const DRAG_THRESHOLD_PX = 3;
   const scale = C15_SCALE;
   const placementW = $derived(effectiveFacingWidth(bank) * scale);
   const outerW = $derived(bankOuterWidth() * scale);
@@ -69,11 +73,6 @@
   const dockHighlightPx = Math.max(6, 10 * scale);
   const bodyH = $derived(Math.max(0, innerH - headerPx));
 
-  let pointerActive = $state(false);
-  let dragging = $state(false);
-  let pointerDownScreen = { x: 0, y: 0 };
-  let dragOriginDisplay = { x: 0, y: 0 };
-  let wasAttachedAtDragStart = false;
   let nameTooltip = $state<{ x: number; y: number } | null>(null);
 
   const headerBg = $derived(
@@ -101,7 +100,7 @@
   const bankLabel = $derived(`${index + 1} - ${bank.name}`);
 
   function showNameTooltip(event: PointerEvent): void {
-    if (suppressNameTooltip || dragging || pointerActive) return;
+    if (suppressNameTooltip || dragging) return;
     nameTooltip = { x: event.clientX, y: event.clientY };
   }
 
@@ -115,66 +114,33 @@
   }
 
   function onDragSurfacePointerDown(event: PointerEvent): void {
-    if (dragDisabled || event.button !== 0) return;
-    event.stopPropagation();
-    hideNameTooltip();
-    const target = event.currentTarget as HTMLElement | null;
-    target?.setPointerCapture(event.pointerId);
-    pointerActive = true;
-    dragging = false;
-    pointerDownScreen = { x: event.clientX, y: event.clientY };
-    dragOriginDisplay = { x: displayX, y: displayY };
-    wasAttachedAtDragStart = Boolean(bank.attachedToUuid);
-    onselect?.(bank.uuid, event as unknown as MouseEvent);
-  }
-
-  function onDragSurfacePointerMove(event: PointerEvent): void {
-    if (!pointerActive) return;
-    event.stopPropagation();
-
-    if (!dragging) {
-      const totalDx = event.clientX - pointerDownScreen.x;
-      const totalDy = event.clientY - pointerDownScreen.y;
-      if (Math.hypot(totalDx, totalDy) < DRAG_THRESHOLD_PX) return;
-      dragging = true;
-      hideNameTooltip();
-      ondraggrab?.({
-        clientX: event.clientX,
-        clientY: event.clientY,
-        originX: dragOriginDisplay.x,
-        originY: dragOriginDisplay.y,
-        userDrag: wasAttachedAtDragStart,
-        pointerId: event.pointerId,
+    if (dragDisabled || event.button !== 0) {
+      selTrace('bankcard-lite.down-ignored', {
+        bankUuid: bank.uuid.slice(0, 8),
+        bankName: bank.name,
+        reason: dragDisabled ? 'dragDisabled' : `button=${event.button}`,
+        selectedProp: selected,
       });
+      return;
     }
-  }
-
-  function onDragSurfacePointerUp(event: PointerEvent): void {
-    if (!pointerActive) return;
+    // stopPropagation: do not start canvas pan/marquee.
+    // preventDefault: reduce UA pan/scroll/drag that fires pointercancel on grab re-render.
     event.stopPropagation();
-    const wasDragging = dragging;
-    pointerActive = false;
-    dragging = false;
-    if (wasDragging) {
-      ondragend?.();
-    } else {
-      onclickselect?.(bank.uuid, event as unknown as MouseEvent);
-    }
-    const target = event.currentTarget as HTMLElement | null;
-    target?.releasePointerCapture(event.pointerId);
+    event.preventDefault();
+    hideNameTooltip();
+    selTracePointer('bankcard-lite.bank-pointerdown', event, {
+      bankUuid: bank.uuid.slice(0, 8),
+      bankName: bank.name,
+      selectedProp: selected,
+    });
+    onbankpointerdown?.({
+      clientX: event.clientX,
+      clientY: event.clientY,
+      originX: displayX,
+      originY: displayY,
+      pointerId: event.pointerId,
+    });
   }
-
-  const dragPointerHandlers = {
-    onpointerenter: showNameTooltip,
-    onpointermove: (e: PointerEvent) => {
-      if (pointerActive) onDragSurfacePointerMove(e);
-      else moveNameTooltip(e);
-    },
-    onpointerleave: hideNameTooltip,
-    onpointerdown: onDragSurfacePointerDown,
-    onpointerup: onDragSurfacePointerUp,
-    onpointercancel: onDragSurfacePointerUp,
-  };
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -188,17 +154,14 @@
   style:height="{outerH}px"
 >
   {#if dockEdgeHighlight}
-    {@const dockStyle =
-      dockEdgeHighlight === 'west'
-        ? `left:0;top:${chromeTopPx}px;width:${dockHighlightPx}px;height:${innerH}px`
-        : dockEdgeHighlight === 'east'
-          ? `left:${placementW - dockHighlightPx}px;top:${chromeTopPx}px;width:${dockHighlightPx}px;height:${innerH}px`
-          : dockEdgeHighlight === 'north'
-            ? `left:0;top:0;width:${placementW}px;height:${dockHighlightPx}px`
-            : `left:0;top:${chromeTopPx + innerH}px;width:${placementW}px;height:${dockHighlightPx}px`}
     <div
       class="pointer-events-none absolute z-20 bg-cyan-400/80"
-      style={dockStyle}
+      style={dockEdgeHighlightBarStyle(dockEdgeHighlight, {
+        placementW,
+        chromeTopPx,
+        innerH,
+        dockHighlightPx,
+      })}
     ></div>
   {/if}
 
@@ -214,7 +177,7 @@
   {/if}
 
   <div
-    class="pointer-events-auto absolute overflow-hidden bg-c15-preset-row
+    class="pointer-events-auto absolute overflow-hidden bg-c15-preset-row touch-none
       {dragging ? 'cursor-grabbing' : 'cursor-grab'}"
     style:left="{chromeLeftPx}px"
     style:top="{chromeTopPx}px"
@@ -223,7 +186,10 @@
     style:border="{borderPx}px solid {bodyBorderColor}"
     style:border-radius="{radiusPx}px {radiusPx}px 0 0"
     style:box-shadow="{bodyShadow}"
-    {...dragPointerHandlers}
+    onpointerenter={showNameTooltip}
+    onpointermove={moveNameTooltip}
+    onpointerleave={hideNameTooltip}
+    onpointerdown={onDragSurfacePointerDown}
   >
     <div
       class="shrink-0 border-b border-black/20"

@@ -51,7 +51,7 @@ export const appSettings = writable({
 
 /**
  * Reserved for banks manually offset while still logically attached (future use).
- * Child drag detach uses `detachBankFromParent` instead (C15 undock semantics).
+ * Drag undock uses `detachBanksKeepingDisplay` / boundary cut via `planBankDrag`.
  */
 export const userPositionedUuids = writable<Set<string>>(new Set());
 
