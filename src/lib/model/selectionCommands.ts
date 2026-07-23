@@ -172,6 +172,17 @@ export function selectPresetsBatch(
   if (frozen.length === 0) return;
   const primary = frozen[frozen.length - 1]!;
   const meta = get(bankMeta);
+  const sameBank = meta.presetSelectionBankUuid === bankUuid;
+  const sameSelection =
+    sameBank &&
+    meta.selectedPresetUuids.length === frozen.length &&
+    frozen.every((u, i) => uuidEquals(u, meta.selectedPresetUuids[i] ?? ''));
+  // Already the active multi-selection — skip store/localStorage thrash (preset drag start).
+  if (sameSelection && !meta.renamingPreset) {
+    setSidebarTab('presets');
+    syncBankSelectedPreset(bankUuid, primary);
+    return;
+  }
   const renaming = meta.renamingPreset;
   if (
     renaming &&

@@ -11,7 +11,7 @@
     dockEdgeHighlightBarStyle,
   } from '../lib/canvas/bankCardChrome';
   import { insertLineInnerY } from '../lib/canvas/presetDragHitTest';
-  import { presetColorFromRawXml } from '../lib/canvas/presetColors';
+  import { presetColorFromName } from '../lib/canvas/presetColors';
 
   import {
     bankMeta,
@@ -42,12 +42,14 @@
     dragDisabled?: boolean;
     attachDropTarget?: boolean;
     dockEdgeHighlight?: DockEdge | null;
-    /** Show C15-style attach corridors on all banks while any bank is dragging. */
+    /** Show C15-style attach corridors (cluster / dock-hover only while dragging). */
     showAttachSlots?: boolean;
     presetDropHighlight?: boolean;
     presetInsertIndex?: number | null;
     /** Live bank-drag chrome (owned by Canvas window gesture). */
     dragging?: boolean;
+    /** Drop multi-layer selection glow while a bank drag is active (border still marks selection). */
+    reduceSelectionGlow?: boolean;
     onpresetpointerdown?: (
       bankUuid: string,
       presetUuids: string[],
@@ -87,6 +89,7 @@
     presetDropHighlight = false,
     presetInsertIndex = null,
     dragging = false,
+    reduceSelectionGlow = false,
     onpresetpointerdown,
     onpresetcontextmenu,
     onbankpointerdown,
@@ -180,7 +183,7 @@
   );
 
   const bodyShadow = $derived(
-    selected
+    selected && !reduceSelectionGlow
       ? `0 0 0 ${Math.max(1, 2 * scale)}px var(--color-c15-bank-selected-glow), 0 0 ${12 * scale}px ${6 * scale}px rgba(173, 181, 217, 0.45)`
       : 'none',
   );
@@ -208,7 +211,8 @@
 
   function presetTagColor(uuid: string): string | null {
     const preset = presetsByUuid.get(uuid.toLowerCase());
-    return preset ? presetColorFromRawXml(preset.rawXml) : null;
+    // Use cached preset.color — never re-parse rawXml on the paint path.
+    return preset ? presetColorFromName(preset.color) : null;
   }
 
   function presetNumber(slotIndex: number): string {

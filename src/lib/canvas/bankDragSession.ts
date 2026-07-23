@@ -5,48 +5,27 @@ import type { Bank } from '../types/bank';
 import type { DisplayPositionMap } from './displayPosition';
 import { resolveDisplayPositions } from './displayPosition';
 import {
-  findBorderSnapForDraggedBank,
-  type SynthBorderEdge,
-} from './borderSnapHitTest';
-import { findDockTargetForDragCluster, type ClusterDockHit } from './dockHitTest';
+  collectSpatialDockCandidateUuids,
+  findDockTargetForDragCluster,
+  type ClusterDockHit,
+} from './dockHitTest';
 import { snapToGrid } from '../model/bankFactory';
 
 export type BankDragPointerResult = {
   dragX: number;
   dragY: number;
-  borderSnapEdge: SynthBorderEdge | null;
-  borderSnapRole: 'outer' | 'inner' | null;
 };
 
 /**
- * Snap drag origin to grid; optionally snap to synth border when zone is shown.
+ * Snap drag origin to the C15 grid (15 units). No synth-zone border magnet.
  */
 export function applyBankDragPointerPosition(
-  dragged: Bank,
   rawX: number,
   rawY: number,
-  options: { showSynthZone: boolean },
 ): BankDragPointerResult {
-  let dragX = rawX;
-  let dragY = rawY;
-  let borderSnapEdge: SynthBorderEdge | null = null;
-  let borderSnapRole: 'outer' | 'inner' | null = null;
-
-  if (options.showSynthZone) {
-    const borderSnap = findBorderSnapForDraggedBank(dragged, dragX, dragY);
-    if (borderSnap) {
-      dragX = borderSnap.snappedX;
-      dragY = borderSnap.snappedY;
-      borderSnapEdge = borderSnap.edge;
-      borderSnapRole = borderSnap.role;
-    }
-  }
-
   return {
-    dragX: snapToGrid(dragX),
-    dragY: snapToGrid(dragY),
-    borderSnapEdge,
-    borderSnapRole,
+    dragX: snapToGrid(rawX),
+    dragY: snapToGrid(rawY),
   };
 }
 
@@ -58,6 +37,7 @@ export type BankDragEndDock = {
 
 /**
  * After store move, find proximity dock target outside the move cluster (if any).
+ * Uses the same spatial candidate filter as live dock hover so chrome and commit match.
  */
 export function resolveBankDragEndDock(
   list: readonly Bank[],
@@ -65,8 +45,14 @@ export function resolveBankDragEndDock(
   display?: DisplayPositionMap,
 ): BankDragEndDock | null {
   const committedDisplay = display ?? resolveDisplayPositions(list as Bank[]);
+  const candidateUuids = collectSpatialDockCandidateUuids(
+    list as Bank[],
+    cluster,
+    committedDisplay,
+  );
   const dock = findDockTargetForDragCluster(list as Bank[], cluster, committedDisplay, {
     excludeClusterUuids: cluster,
+    candidateUuids,
   });
   if (!dock) return null;
   if (cluster.has(dock.target.uuid)) return null;

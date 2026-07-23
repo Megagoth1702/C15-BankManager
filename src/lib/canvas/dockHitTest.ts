@@ -2,13 +2,19 @@ import type { DockEdge } from '../model/attachOperation';
 import { highlightEdgeForDockEdge } from '../model/attachOperation';
 import type { Bank } from '../types/bank';
 import {
+  type AttachCorridorCache,
   type AttachCorridorId,
-  attachCorridorsForBank,
+  attachCorridorsForBankCached,
   rectCenter,
   rectOverlapArea,
 } from './attachCorridors';
 import type { DisplayPositionMap } from './displayPosition';
 import { getDisplayPosition } from './displayPosition';
+import {
+  BANK_LAYOUT,
+  bankOuterHeight,
+  bankOuterWidth,
+} from './geometry';
 
 export interface DockHit {
   target: Bank;
@@ -72,10 +78,73 @@ const COMPLEMENTARY_PAIRS: readonly {
  */
 export interface DockHitTestOptions {
   excludeUuid?: string;
-  /** When set, only these banks are considered as dock targets (viewport culling). */
+  /**
+   * When set, only these banks are considered as dock targets.
+   * Prefer {@link collectSpatialDockCandidateUuids} for hover and commit so
+   * chrome and release agree (do not mix viewport cull with full-list search).
+   */
   candidateUuids?: ReadonlySet<string>;
   /** Skip targets in the same attachment cluster as the dragged bank. */
   excludeClusterUuids?: ReadonlySet<string>;
+  /**
+   * Optional session cache for attach corridors (reuse while display origin is
+   * unchanged). Clear at drag end. Cluster members recompute on move.
+   */
+  corridorCache?: AttachCorridorCache;
+}
+
+/**
+ * Banks that could geometrically corridor-dock with the move cluster: targets
+ * whose outer rect intersects the cluster AABB expanded by one bank span + VA.
+ * Shared by live dock hover and release dock so highlight and commit match.
+ */
+export function collectSpatialDockCandidateUuids(
+  banks: readonly Bank[],
+  clusterUuids: ReadonlySet<string>,
+  displayByUuid: DisplayPositionMap,
+): Set<string> {
+  if (clusterUuids.size === 0) return new Set();
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  let any = false;
+
+  for (const bank of banks) {
+    if (!clusterUuids.has(bank.uuid)) continue;
+    const o = getDisplayPosition(bank, displayByUuid);
+    const w = bankOuterWidth();
+    const h = bankOuterHeight(bank);
+    minX = Math.min(minX, o.x);
+    minY = Math.min(minY, o.y);
+    maxX = Math.max(maxX, o.x + w);
+    maxY = Math.max(maxY, o.y + h);
+    any = true;
+  }
+  if (!any) return new Set();
+
+  // Corridor strips stick out VA; a target body can sit one full span away.
+  const pad =
+    Math.max(bankOuterWidth(), BANK_LAYOUT.visibleAttachArea) +
+    BANK_LAYOUT.visibleAttachArea;
+  minX -= pad;
+  minY -= pad;
+  maxX += pad;
+  maxY += pad;
+
+  const candidates = new Set<string>();
+  for (const bank of banks) {
+    if (clusterUuids.has(bank.uuid)) continue;
+    const o = getDisplayPosition(bank, displayByUuid);
+    const w = bankOuterWidth();
+    const h = bankOuterHeight(bank);
+    if (o.x + w < minX || o.x > maxX || o.y + h < minY || o.y > maxY) {
+      continue;
+    }
+    candidates.add(bank.uuid);
+  }
+  return candidates;
 }
 
 type ScoredDockHit = DockHit & { area: number; distSq: number };
@@ -99,7 +168,9 @@ function findDockTargetForDraggedBankScored(
 ): ScoredDockHit | null {
   const draggedUuid = options.excludeUuid ?? draggedBank.uuid;
   const draggedOrigin = getDisplayPosition(draggedBank, displayByUuid);
-  const draggedCorridors = attachCorridorsForBank(
+  const cache = options.corridorCache;
+  const draggedCorridors = attachCorridorsForBankCached(
+    cache,
     draggedBank,
     draggedOrigin.x,
     draggedOrigin.y,
@@ -115,7 +186,8 @@ function findDockTargetForDraggedBankScored(
     if (options.excludeClusterUuids?.has(target.uuid)) continue;
 
     const targetOrigin = getDisplayPosition(target, displayByUuid);
-    const targetCorridors = attachCorridorsForBank(
+    const targetCorridors = attachCorridorsForBankCached(
+      cache,
       target,
       targetOrigin.x,
       targetOrigin.y,

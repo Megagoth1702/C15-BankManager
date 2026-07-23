@@ -1,7 +1,9 @@
 <script lang="ts">
   import {
-    buildConnectionLines,
+    buildConnectionLinesFromEdges,
+    collectAttachmentEdges,
     getSolidParentChainEdgeIdsForSelection,
+    type AttachmentEdge,
   } from '../lib/canvas/connectionLines';
   import { resolveDisplayPositions } from '../lib/canvas/displayPosition';
   import type { DisplayPositionMap } from '../lib/canvas/displayPosition';
@@ -26,8 +28,19 @@
   const displayByUuid = $derived(
     displayByUuidProp ?? resolveDisplayPositions(banks),
   );
+
+  /**
+   * Topology from bank list only. Geometry (below) re-runs when displayByUuid
+   * moves during drag; edges are not rebuilt from ancestry walks.
+   */
+  const attachmentEdges = $derived(collectAttachmentEdges(banks));
+
   const lines = $derived.by(() => {
-    const built = buildConnectionLines(banks, displayByUuid);
+    const built = buildConnectionLinesFromEdges(
+      attachmentEdges,
+      banks,
+      displayByUuid,
+    );
     if (!visibleBankUuids || visibleBankUuids.size === 0) return built;
     return built.filter(
       (line) =>

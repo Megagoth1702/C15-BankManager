@@ -23,36 +23,33 @@ export const BORDER_MARKERS = {
 const BANK_W = bankOuterWidth();
 const EMPTY_H = emptyBankOuterHeight();
 
-export interface SynthBorderEdges {
-  left: number;
-  right: number;
-  top: number;
-  bottom: number;
-}
-
 /** Interior rectangle where synth GUI parameters live — no preset banks allowed. */
-export function getSynthNoGoRect(): { x: number; y: number; width: number; height: number } {
+const SYNTH_NO_GO_RECT: Readonly<{
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}> = (() => {
   const left = BORDER_MARKERS.leftOuter.x + BANK_W;
   const top = BORDER_MARKERS.top.y + EMPTY_H;
   const right = BORDER_MARKERS.rightOuter.x;
   const bottom = BORDER_MARKERS.bottom.y;
-  return {
+  return Object.freeze({
     x: left,
     y: top,
     width: right - left,
     height: bottom - top,
-  };
-}
+  });
+})();
 
-/** Synth border lines for snap + overlay (outer facing edges on left/right). */
-export function getSynthBorderEdges(): SynthBorderEdges {
-  const noGo = getSynthNoGoRect();
-  return {
-    left: noGo.x,
-    right: noGo.x + noGo.width,
-    top: noGo.y,
-    bottom: noGo.y + noGo.height,
-  };
+/** Interior rectangle where synth GUI parameters live — no preset banks allowed. */
+export function getSynthNoGoRect(): {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+} {
+  return SYNTH_NO_GO_RECT;
 }
 
 /** Placement constants for wide-grid mass import layout. */

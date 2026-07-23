@@ -27,6 +27,17 @@
     selTraceSelection,
   } from '../lib/debug/selectionTrace';
   import { recordBankRenderSnapshot } from '../lib/debug/renderPerfLog';
+  import {
+    viewperfPanEnd,
+    viewperfPanSample,
+    viewperfPanStart,
+    viewperfScheduleVisibility,
+    viewperfStagedLite,
+    viewperfVisibilityRefresh,
+    viewperfZoom,
+    VIEWPERF_TAG,
+    type ViewperfVisibilitySource,
+  } from '../lib/debug/viewportPerfLog';
   import { shouldIgnoreKeyboardShortcut } from '../lib/keyboard';
   import {
     applyBankDragPointerPosition,
@@ -34,8 +45,8 @@
   } from '../lib/canvas/bankDragSession';
   import { POINTER_GESTURE_THRESHOLD_PX } from '../lib/canvas/bankCardChrome';
   import {
+    applyDragClusterDisplayPositions,
     resolveDisplayPositions,
-    resolveDragClusterDisplayPositions,
     type DisplayPositionMap,
   } from '../lib/canvas/displayPosition';
   import {
@@ -52,13 +63,22 @@
     registerCanvasElement,
     updatePointerPosition,
   } from '../lib/canvas/pointerPosition';
-  import { findDockTargetForDragCluster } from '../lib/canvas/dockHitTest';
-  import type { SynthBorderEdge } from '../lib/canvas/borderSnapHitTest';
+  import {
+    collectSpatialDockCandidateUuids,
+    findDockTargetForDragCluster,
+  } from '../lib/canvas/dockHitTest';
+  import type { AttachCorridorCache } from '../lib/canvas/attachCorridors';
   import {
     computeEdgeScrollDelta,
     EDGE_SCROLL,
   } from '../lib/canvas/edgeAutoScroll';
-  import { visibleBankUuidsInCanvas } from '../lib/canvas/viewportVisibility';
+  import {
+    applyVisibilityWithEnterCap,
+    CANVAS_VISIBILITY_MARGINS,
+    MAX_VISIBILITY_ENTERS_PER_FRAME,
+    pruneStagedLiteUuids,
+    stickyVisibleBankUuidsInCanvas,
+  } from '../lib/canvas/viewportVisibility';
   import type { DockEdge } from '../lib/model/attachOperation';
   import {
     appSettings,
@@ -102,7 +122,11 @@
     emptyBankOuterHeight,
   } from '../lib/canvas/geometry';
   import { snapToGrid } from '../lib/model/bankFactory';
-  import { BANK_LOD_FULL_ZOOM, bankCardVariant } from '../lib/canvas/lod';
+  import {
+    bankCardVariant,
+    bankLodMode,
+    setBankLodFullZoom,
+  } from '../lib/canvas/lod';
   import BankCard from './BankCard.svelte';
   import BankCardLite from './BankCardLite.svelte';
   import CanvasContextMenu from './CanvasContextMenu.svelte';
@@ -130,8 +154,7 @@
     draggedHighlightEdge: DockEdge;
     dockEdge: DockEdge;
   } | null>(null);
-  let borderSnapHover = $state<SynthBorderEdge | null>(null);
-  let borderSnapRole = $state<'outer' | 'inner' | null>(null);
+
   let lastPointer = { x: 0, y: 0 };
   let lastFittedCount = 0;
   let initialSynthViewport = false;
@@ -167,7 +190,10 @@
     pointerId: number;
   } | null>(null);
   let dragBaseDisplay = $state<DisplayPositionMap | null>(null);
+  /** Live display map for the drag session (cloned once at grab; cluster keys only rewritten). */
   let dragDisplayMap = $state<DisplayPositionMap | null>(null);
+  /** Bumps when cluster positions change so derived readers re-run without O(n) Map copy. */
+  let dragDisplayEpoch = $state(0);
   let dragClusterUuids = $state<Set<string> | null>(null);
   let autoScrollPointer = $state({ clientX: 0, clientY: 0 });
   let canvasClientRect = $state({ left: 0, top: 0, width: 0, height: 0 });
@@ -180,13 +206,50 @@
   let edgeScrollRafId: number | null = null;
   let visibleCanvasBankUuids = $state<Set<string>>(new Set());
   let slotVisibilityDraggedUuid = $state<string | null>(null);
+  /** Monotonic visibility pass counter (also keys staged-lite hold). */
   let visibilityFrame = 0;
   let lastVisibilityLogCount = -1;
+  /**
+   * Newly entered banks mount as lite for STAGED_LITE_HOLD_FRAMES so edge pan
+   * does not pay full-card DOM cost on first paint. Map: uuid → staged clock.
+   */
+  let stagedLiteEnterFrame = new Map<string, number>();
+  let stagedLiteUuids = $state<Set<string>>(new Set());
+  let stagedLiteRafId: number | null = null;
+  /** Dedicated clock for staged-lite hold (rAF ticks only — not pan culls). */
+  let stagedLiteClock = 0;
+  /** Coalesce pan/edge-scroll visibility to one cull per animation frame. */
+  let visibilityRafId: number | null = null;
+  let visibilityForcePending = false;
+  let visibilitySourcePending: ViewperfVisibilitySource = 'schedule';
+  /** Desired set with remaining enters to drain across frames. */
+  let pendingDesiredVisible: Set<string> | null = null;
+  let enterDrainRafId: number | null = null;
+  /** Pan origin for delta-thaw escape hatch (half-canvas pan forces re-cull). */
+  let panMembershipOrigin = { panX: 0, panY: 0 };
+  /** Fraction of min(canvasW,H) pan distance before mid-pan membership thaw. */
+  const PAN_DELTA_THAW_RATIO = 0.5;
   let dockHoverFrame = 0;
   let lastDockDragX = 0;
   let lastDockDragY = 0;
-  const CANVAS_CULL_MARGIN_PX = 96;
-  const VISIBILITY_FRAME_INTERVAL = 4;
+  /**
+   * Coalesce high-rate pointermove samples to one bank-drag apply per frame.
+   * Edge-scroll tick already runs at rAF and calls apply directly.
+   */
+  let pendingDragClient: { clientX: number; clientY: number } | null = null;
+  let bankDragApplyRafId: number | null = null;
+  /** Reuse attach corridors while display origins are stable during a bank drag. */
+  let dockCorridorCache: AttachCorridorCache | null = null;
+  /**
+   * Attach corridor chrome on full cards — deferred one frame after grab so the
+   * grab re-render (detach + selection + drag class) does not also mount corridor
+   * divs in the same turn. Only cluster + dock-hover banks show corridors (not
+   * every visible full card).
+   */
+  let showAttachSlotsChrome = $state(false);
+  let showAttachSlotsRafId: number | null = null;
+  /** Frames a newly entered bank stays lite before full promotion. */
+  const STAGED_LITE_HOLD_FRAMES = 2;
   const DOCK_HOVER_INTERVAL = 2;
   const DOCK_HOVER_MIN_DELTA_C15 = 4;
 
@@ -214,9 +277,20 @@
     shift: boolean;
     moveMode: boolean;
     active: boolean;
+    /** Resolved once at threshold — avoid O(n) name lookup every pointer sample. */
+    label: string;
   } | null>(null);
   let presetDropTarget = $state<PresetDropTarget | null>(null);
   let presetHoverBank = $state<{ bankUuid: string; bankIndex: number } | null>(null);
+  /** Latest pointer sample for rAF-coalesced drop-target hit-test. */
+  let pendingPresetDragClient: {
+    clientX: number;
+    clientY: number;
+    moveMode: boolean;
+  } | null = null;
+  let presetDragHitTestRafId: number | null = null;
+  /** Defer selectPresetsBatch one frame so the drag overlay paints first. */
+  let presetDragSelectRafId: number | null = null;
 
   let presetContextMenu = $state<{
     clientX: number;
@@ -245,7 +319,10 @@
     );
   });
 
-  const displayByUuid = $derived.by(() => {
+  const displayByUuid = $derived.by((): DisplayPositionMap => {
+    // During drag, dragDisplayMap is reassigned (new Map) on each moved grid cell
+    // so this derived's === output changes and cards/lines re-read positions.
+    // In-place Map.set alone is not enough under Svelte 5 $derived.
     if (bankDragActive && dragDisplayMap) return dragDisplayMap;
     const list = $banks;
     const overrides = activeDragStored
@@ -254,22 +331,69 @@
     return timeLayout(() => resolveDisplayPositions(list, overrides));
   });
 
+  const selectedBankUuidSet = $derived(new Set($bankMeta.selectedBankUuids));
+
   const visibleBanksForRender = $derived.by(() => {
     const visible = visibleCanvasBankUuids;
+    const forceLite = stagedLiteUuids;
     const zoom = viewport.zoom;
+    // Keep LOD module threshold in sync with settings (reactive re-render on slider).
+    setBankLodFullZoom($appSettings.bankDetailMinZoom);
+    // Touch LOD once so hysteresis advances with zoom for this render pass.
+    bankLodMode(zoom);
     const rows: {
       bank: (typeof $banks)[number];
       index: number;
       variant: 'lite' | 'full';
     }[] = [];
     $banks.forEach((bank, index) => {
-      const variant = bankCardVariant(zoom, bank.uuid, visible);
+      let variant = bankCardVariant(zoom, bank.uuid, visible);
+      // Staged enter: first paints are lite even when zoom would allow full.
+      if (variant === 'full' && forceLite.has(bank.uuid)) {
+        variant = 'lite';
+      }
       if (variant !== null) {
         rows.push({ bank, index, variant });
       }
     });
     return rows;
   });
+
+  function setsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+    if (a === b) return true;
+    if (a.size !== b.size) return false;
+    for (const value of a) {
+      if (!b.has(value)) return false;
+    }
+    return true;
+  }
+
+  function setShowAttachSlotsChrome(next: boolean): void {
+    if (showAttachSlotsRafId !== null) {
+      cancelAnimationFrame(showAttachSlotsRafId);
+      showAttachSlotsRafId = null;
+    }
+    if (!next) {
+      showAttachSlotsChrome = false;
+      return;
+    }
+    // Defer mount of corridor chrome until after grab-time card thrash.
+    showAttachSlotsRafId = requestAnimationFrame(() => {
+      showAttachSlotsRafId = null;
+      if (bankDragActive) showAttachSlotsChrome = true;
+    });
+  }
+
+  /** Corridor chrome only for movers + current dock pair (not every full card). */
+  function bankShowsAttachSlots(uuid: string): boolean {
+    if (!showAttachSlotsChrome) return false;
+    if (dragClusterUuids?.has(uuid)) return true;
+    if (dockHover?.targetUuid === uuid || dockHover?.draggedUuid === uuid) {
+      return true;
+    }
+    if (bankDragGrab?.uuid === uuid) return true;
+    return false;
+  }
 
   function canvasRectLike(): DOMRect {
     return canvasClientRect as DOMRect;
@@ -301,68 +425,407 @@
     return always;
   }
 
-  function refreshCanvasVisibility(force = false): void {
+  function clearStagedLite(): void {
+    if (stagedLiteRafId !== null) {
+      cancelAnimationFrame(stagedLiteRafId);
+      stagedLiteRafId = null;
+    }
+    const had = stagedLiteEnterFrame.size;
+    stagedLiteEnterFrame = new Map();
+    if (stagedLiteUuids.size > 0) {
+      stagedLiteUuids = new Set();
+    }
+    if (had > 0) {
+      viewperfStagedLite({ event: 'clear', count: had, clock: stagedLiteClock });
+    }
+  }
+
+  /** Advance staged-lite hold and clear uuids that have waited long enough. */
+  function tickStagedLitePromotion(): void {
+    stagedLiteRafId = null;
+    if (stagedLiteEnterFrame.size === 0) {
+      if (stagedLiteUuids.size > 0) stagedLiteUuids = new Set();
+      return;
+    }
+    stagedLiteClock++;
+    const before = stagedLiteEnterFrame.size;
+    const still = pruneStagedLiteUuids(
+      stagedLiteEnterFrame,
+      stagedLiteClock,
+      STAGED_LITE_HOLD_FRAMES,
+    );
+    // Drop map entries that are no longer staged.
+    if (still.size !== stagedLiteEnterFrame.size) {
+      const nextMap = new Map<string, number>();
+      for (const uuid of still) {
+        const enteredAt = stagedLiteEnterFrame.get(uuid);
+        if (enteredAt !== undefined) nextMap.set(uuid, enteredAt);
+      }
+      stagedLiteEnterFrame = nextMap;
+    }
+    if (!setsEqual(stagedLiteUuids, still)) {
+      stagedLiteUuids = still;
+    }
+    const promoted = before - still.size;
+    if (promoted > 0) {
+      viewperfStagedLite({
+        event: 'promote',
+        count: promoted,
+        clock: stagedLiteClock,
+      });
+    }
+    if (stagedLiteEnterFrame.size > 0) {
+      stagedLiteRafId = requestAnimationFrame(tickStagedLitePromotion);
+    }
+  }
+
+  function noteVisibilityEnters(entered: readonly string[]): void {
+    if (entered.length === 0) return;
+    let changed = false;
+    for (const uuid of entered) {
+      if (!stagedLiteEnterFrame.has(uuid)) {
+        stagedLiteEnterFrame.set(uuid, stagedLiteClock);
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    const next = new Set(stagedLiteUuids);
+    for (const uuid of entered) next.add(uuid);
+    stagedLiteUuids = next;
+    viewperfStagedLite({
+      event: 'enter',
+      count: entered.length,
+      uuids: entered,
+      clock: stagedLiteClock,
+    });
+    if (stagedLiteRafId === null) {
+      stagedLiteRafId = requestAnimationFrame(tickStagedLitePromotion);
+    }
+  }
+
+  function cancelEnterDrain(): void {
+    if (enterDrainRafId !== null) {
+      cancelAnimationFrame(enterDrainRafId);
+      enterDrainRafId = null;
+    }
+    pendingDesiredVisible = null;
+  }
+
+  function scheduleEnterDrain(): void {
+    if (enterDrainRafId !== null || !pendingDesiredVisible) return;
+    enterDrainRafId = requestAnimationFrame(() => {
+      enterDrainRafId = null;
+      if (!pendingDesiredVisible) return;
+      // Drain remaining enters without re-running full sticky (desired is frozen).
+      applyVisibilityMembership(
+        pendingDesiredVisible,
+        buildAlwaysVisibleUuids(),
+        /* burst */ false,
+        'enter-drain',
+        /* cullMs */ 0,
+        performance.now(),
+      );
+    });
+  }
+
+  /**
+   * Schedule a visibility cull on the next animation frame.
+   * Pan pointermoves call this so we never re-cull more than once per frame.
+   * force=true still coalesces but runs a full sticky pass (zoom / thaw).
+   */
+  function scheduleCanvasVisibility(
+    force = false,
+    source: ViewperfVisibilitySource = 'schedule',
+  ): void {
+    if (force) visibilityForcePending = true;
+    visibilitySourcePending = source;
+    viewperfScheduleVisibility(force);
+    if (visibilityRafId !== null) return;
+    visibilityRafId = requestAnimationFrame(() => {
+      visibilityRafId = null;
+      const forceNow = visibilityForcePending;
+      visibilityForcePending = false;
+      const src = visibilitySourcePending;
+      visibilitySourcePending = 'schedule';
+      refreshCanvasVisibility(forceNow, src);
+    });
+  }
+
+  /**
+   * Apply rate-limited membership from a desired visible set.
+   * `burst` uses a higher per-frame enter budget (thaw / zoom / effect).
+   */
+  function applyVisibilityMembership(
+    desired: ReadonlySet<string>,
+    alwaysInclude: ReadonlySet<string>,
+    burst: boolean,
+    source: ViewperfVisibilitySource,
+    cullMs: number,
+    tTotal0: number,
+  ): boolean {
+    const previous = visibleCanvasBankUuids;
+    // Never mount unlimited banks in one frame (initial 237 → 90ms paint-gap).
+    const maxEnters = burst
+      ? Math.max(MAX_VISIBILITY_ENTERS_PER_FRAME * 3, 36)
+      : MAX_VISIBILITY_ENTERS_PER_FRAME;
+    const effective = applyVisibilityWithEnterCap(
+      previous,
+      desired,
+      maxEnters,
+      alwaysInclude,
+    );
+
+    // Drop staged entries that left the mount set.
+    if (stagedLiteEnterFrame.size > 0) {
+      let pruned = false;
+      const prunedUuids: string[] = [];
+      for (const uuid of [...stagedLiteEnterFrame.keys()]) {
+        if (!effective.next.has(uuid)) {
+          stagedLiteEnterFrame.delete(uuid);
+          prunedUuids.push(uuid);
+          pruned = true;
+        }
+      }
+      if (pruned) {
+        const still = new Set<string>();
+        for (const uuid of stagedLiteEnterFrame.keys()) still.add(uuid);
+        if (!setsEqual(stagedLiteUuids, still)) stagedLiteUuids = still;
+        viewperfStagedLite({
+          event: 'prune-offscreen',
+          count: prunedUuids.length,
+          uuids: prunedUuids,
+          clock: stagedLiteClock,
+        });
+      }
+    }
+
+    let membershipChanged = false;
+    if (!setsEqual(previous, effective.next)) {
+      membershipChanged = true;
+      if (effective.entered.length > 0) {
+        noteVisibilityEnters(effective.entered);
+      }
+      visibleCanvasBankUuids = effective.next;
+    }
+
+    if (effective.remainingEnters > 0) {
+      pendingDesiredVisible = new Set(desired);
+      scheduleEnterDrain();
+    } else {
+      cancelEnterDrain();
+    }
+
+    recordVisibleBanksRendered(effective.next.size);
+    recordBankRenderSnapshot($banks, visibleCanvasBankUuids, viewport.zoom);
+
+    const totalMs = performance.now() - tTotal0;
+    viewperfVisibilityRefresh({
+      force: burst,
+      source,
+      bankTotal: $banks.length,
+      canvasW: canvasWidth,
+      canvasH: canvasHeight,
+      zoom: viewport.zoom,
+      panX: viewport.panX,
+      panY: viewport.panY,
+      enterMarginPx: CANVAS_VISIBILITY_MARGINS.enterPx,
+      exitMarginPx: CANVAS_VISIBILITY_MARGINS.exitPx,
+      previousVisible: previous,
+      nextVisible: effective.next,
+      alwaysIncludeCount: alwaysInclude.size,
+      stagedLiteCount: stagedLiteUuids.size,
+      cullMs,
+      totalMs,
+      membershipChanged,
+      remainingEnters: effective.remainingEnters,
+    });
+
+    if (effective.next.size !== lastVisibilityLogCount) {
+      lastVisibilityLogCount = effective.next.size;
+      log('attach', 'canvas visibility', {
+        visible: effective.next.size,
+        total: $banks.length,
+        dragged: slotVisibilityDraggedUuid ?? activeDragStored?.uuid ?? null,
+        frame: visibilityFrame,
+        bankDragActive,
+        stagedLite: stagedLiteUuids.size,
+        remainingEnters: effective.remainingEnters,
+        source,
+        tag: VIEWPERF_TAG,
+      });
+    }
+
+    return effective.remainingEnters > 0;
+  }
+
+  function panDeltaForcesThaw(): boolean {
+    if (!isPanning) return false;
+    const span = Math.min(canvasWidth, canvasHeight);
+    if (span <= 0) return false;
+    const dx = viewport.panX - panMembershipOrigin.panX;
+    const dy = viewport.panY - panMembershipOrigin.panY;
+    return Math.hypot(dx, dy) >= span * PAN_DELTA_THAW_RATIO;
+  }
+
+  function refreshCanvasVisibility(
+    force = false,
+    source: ViewperfVisibilitySource = 'other',
+  ): void {
+    const tTotal0 = performance.now();
+
     if (canvasWidth <= 0 || canvasHeight <= 0 || $banks.length === 0) {
-      visibleCanvasBankUuids = new Set();
+      if (visibleCanvasBankUuids.size > 0) {
+        visibleCanvasBankUuids = new Set();
+      }
+      clearStagedLite();
+      cancelEnterDrain();
       return;
     }
 
     visibilityFrame++;
-    if (!force && visibilityFrame % VISIBILITY_FRAME_INTERVAL !== 0) {
+    const previous = visibleCanvasBankUuids;
+    const alwaysInclude = buildAlwaysVisibleUuids();
+
+    // Mid-pan freeze: keep world transform live, do not thrash mount set.
+    // Escape hatch: large pan delta or force (pointerup/zoom/effect).
+    const deltaThaw = !force && panDeltaForcesThaw();
+    const applyMembership = force || deltaThaw || !isPanning;
+    const effectiveSource: ViewperfVisibilitySource = deltaThaw
+      ? 'delta-thaw'
+      : source;
+
+    if (!applyMembership) {
+      // Still allow alwaysInclude to join (drag targets) without full re-cull churn.
+      let needsPriority = false;
+      for (const uuid of alwaysInclude) {
+        if (!previous.has(uuid)) {
+          needsPriority = true;
+          break;
+        }
+      }
+      if (!needsPriority) {
+        const totalMs = performance.now() - tTotal0;
+        viewperfVisibilityRefresh({
+          force: false,
+          source: effectiveSource,
+          bankTotal: $banks.length,
+          canvasW: canvasWidth,
+          canvasH: canvasHeight,
+          zoom: viewport.zoom,
+          panX: viewport.panX,
+          panY: viewport.panY,
+          enterMarginPx: CANVAS_VISIBILITY_MARGINS.enterPx,
+          exitMarginPx: CANVAS_VISIBILITY_MARGINS.exitPx,
+          previousVisible: previous,
+          nextVisible: previous,
+          alwaysIncludeCount: alwaysInclude.size,
+          stagedLiteCount: stagedLiteUuids.size,
+          cullMs: 0,
+          totalMs,
+          membershipChanged: false,
+          frozenSkip: true,
+        });
+        return;
+      }
+      // Priority path: merge alwaysInclude only.
+      const merged = new Set(previous);
+      for (const uuid of alwaysInclude) merged.add(uuid);
+      if (!setsEqual(previous, merged)) {
+        noteVisibilityEnters(
+          [...alwaysInclude].filter((u) => !previous.has(u)),
+        );
+        visibleCanvasBankUuids = merged;
+      }
+      const totalMs = performance.now() - tTotal0;
+      viewperfVisibilityRefresh({
+        force: false,
+        source: effectiveSource,
+        bankTotal: $banks.length,
+        canvasW: canvasWidth,
+        canvasH: canvasHeight,
+        zoom: viewport.zoom,
+        panX: viewport.panX,
+        panY: viewport.panY,
+        enterMarginPx: CANVAS_VISIBILITY_MARGINS.enterPx,
+        exitMarginPx: CANVAS_VISIBILITY_MARGINS.exitPx,
+        previousVisible: previous,
+        nextVisible: visibleCanvasBankUuids,
+        alwaysIncludeCount: alwaysInclude.size,
+        stagedLiteCount: stagedLiteUuids.size,
+        cullMs: 0,
+        totalMs,
+        membershipChanged: !setsEqual(previous, visibleCanvasBankUuids),
+        frozenSkip: false,
+      });
       return;
     }
 
-    const alwaysInclude = buildAlwaysVisibleUuids();
-    const visible = timeVisibility(() =>
-      visibleBankUuidsInCanvas(
+    // Reset pan freeze origin after a thaw so delta hatch can fire again.
+    if (deltaThaw || force) {
+      panMembershipOrigin = { panX: viewport.panX, panY: viewport.panY };
+    }
+
+    const tCull0 = performance.now();
+    const desired = timeVisibility(() =>
+      stickyVisibleBankUuidsInCanvas(
         $banks,
         displayByUuid,
         viewport,
         canvasWidth,
         canvasHeight,
+        previous,
         alwaysInclude,
-        CANVAS_CULL_MARGIN_PX,
+        CANVAS_VISIBILITY_MARGINS.enterPx,
+        CANVAS_VISIBILITY_MARGINS.exitPx,
       ),
     );
-    visibleCanvasBankUuids = visible;
-    recordVisibleBanksRendered(visible.size);
-    recordBankRenderSnapshot($banks, visible, viewport.zoom);
+    const cullMs = performance.now() - tCull0;
 
-    if (visible.size !== lastVisibilityLogCount) {
-      lastVisibilityLogCount = visible.size;
-      log('attach', 'canvas visibility', {
-        visible: visible.size,
-        total: $banks.length,
-        dragged: slotVisibilityDraggedUuid ?? activeDragStored?.uuid ?? null,
-        frame: visibilityFrame,
-        bankDragActive,
-      });
-    }
+    applyVisibilityMembership(
+      desired,
+      alwaysInclude,
+      /* burst enter budget for thaw/force paths */ true,
+      effectiveSource,
+      cullMs,
+      tTotal0,
+    );
   }
 
-  function computeDragDisplayMap(
+  /**
+   * Build a fresh display map from frozen grab base + primary Δ.
+   * Always assigns a **new** Map so Svelte 5 `$derived` invalidates (===) and
+   * bank cards / connection lines re-render the drag preview. In-place Map.set
+   * alone does not update the UI.
+   */
+  function updateLiveDragDisplayMap(
     draggedUuid: string,
     dragX: number,
     dragY: number,
   ): DisplayPositionMap {
-    const list = $banks;
-    // Local copy so TS narrows (Svelte $state fields do not narrow in closures).
     const baseDisplay = dragBaseDisplay;
-    if (baseDisplay) {
-      return timeLayout(() =>
-        resolveDragClusterDisplayPositions(
-          list,
+    const cluster = dragClusterUuids;
+    if (baseDisplay && cluster) {
+      const next = timeLayout(() => {
+        // Clone from frozen base (not the previous live map) so base stays pure.
+        const map = new Map(baseDisplay);
+        applyDragClusterDisplayPositions(
+          map,
+          baseDisplay,
           draggedUuid,
           dragX,
           dragY,
-          baseDisplay,
-          dragClusterUuids ?? undefined,
-        ),
-      );
+          cluster,
+        );
+        return map;
+      });
+      dragDisplayMap = next;
+      dragDisplayEpoch += 1;
+      return next;
     }
+    // Fallback before grab session maps exist (should not run mid-drag).
     return timeLayout(() =>
       resolveDisplayPositions(
-        list,
+        $banks,
         new Map([[draggedUuid, { x: dragX, y: dragY }]]),
       ),
     );
@@ -379,7 +842,7 @@
     }
     edgeScrollIntensities = { left: 0, right: 0, top: 0, bottom: 0 };
     slotVisibilityDraggedUuid = null;
-    visibilityFrame = 0;
+    // Do not reset visibilityFrame — staged-lite hold keys off it.
     lastVisibilityLogCount = -1;
   }
 
@@ -400,14 +863,80 @@
       edgeScrollIntensities = result.intensities;
       if (result.dx !== 0 || result.dy !== 0) {
         panBy(result.dx, result.dy);
+        // Preset drop target is in world coords — re-hit after pan without waiting for pointermove.
+        if (presetDrag?.active) {
+          updatePresetDragTargets(
+            autoScrollPointer.clientX,
+            autoScrollPointer.clientY,
+          );
+        }
       }
       if (bankDragGrab) {
         applyBankDragPointer(autoScrollPointer.clientX, autoScrollPointer.clientY);
       }
-      refreshCanvasVisibility();
+      // Already on rAF — cull immediately (not pointer-pan freeze).
+      refreshCanvasVisibility(false, 'edge-scroll');
       edgeScrollRafId = requestAnimationFrame(tick);
     };
     edgeScrollRafId = requestAnimationFrame(tick);
+  }
+
+  function cancelPresetDragHitTestSchedule(): void {
+    if (presetDragHitTestRafId !== null) {
+      cancelAnimationFrame(presetDragHitTestRafId);
+      presetDragHitTestRafId = null;
+    }
+    pendingPresetDragClient = null;
+  }
+
+  function cancelPresetDragSelectSchedule(): void {
+    if (presetDragSelectRafId !== null) {
+      cancelAnimationFrame(presetDragSelectRafId);
+      presetDragSelectRafId = null;
+    }
+  }
+
+  function flushPresetDragHitTest(): void {
+    if (presetDragHitTestRafId !== null) {
+      cancelAnimationFrame(presetDragHitTestRafId);
+      presetDragHitTestRafId = null;
+    }
+    const pending = pendingPresetDragClient;
+    pendingPresetDragClient = null;
+    if (!pending || !presetDrag?.active) return;
+    updatePresetDragTargets(pending.clientX, pending.clientY);
+  }
+
+  /** Coalesce drop-target hit-tests to one per frame; overlay position updates immediately. */
+  function schedulePresetDragHitTest(
+    clientX: number,
+    clientY: number,
+    moveMode: boolean,
+  ): void {
+    pendingPresetDragClient = { clientX, clientY, moveMode };
+    if (presetDragHitTestRafId !== null) return;
+    presetDragHitTestRafId = requestAnimationFrame(() => {
+      presetDragHitTestRafId = null;
+      const pending = pendingPresetDragClient;
+      pendingPresetDragClient = null;
+      if (!pending || !presetDrag?.active) return;
+      updatePresetDragTargets(pending.clientX, pending.clientY);
+    });
+  }
+
+  function syncPresetDragMoveModeFromEvent(event: KeyboardEvent | PointerEvent): void {
+    if (!presetDrag) return;
+    const next = event.ctrlKey || event.metaKey;
+    if (presetDrag.moveMode === next) return;
+    presetDrag = { ...presetDrag, moveMode: next };
+  }
+
+  function clearPresetDragSession(): void {
+    cancelPresetDragHitTestSchedule();
+    cancelPresetDragSelectSchedule();
+    presetDrag = null;
+    presetDropTarget = null;
+    presetHoverBank = null;
   }
 
   function releaseBankGestureCapture(pointerId: number): void {
@@ -490,7 +1019,7 @@
     }
 
     if (bankDragGrab && event.pointerId === bankDragGrab.pointerId) {
-      applyBankDragPointer(event.clientX, event.clientY);
+      scheduleBankDragApply(event.clientX, event.clientY);
     }
   }
 
@@ -592,6 +1121,16 @@
         suppressClickAfterMarqueeTimer = null;
       }
       stopEdgeScrollLoop();
+      cancelPresetDragHitTestSchedule();
+      cancelPresetDragSelectSchedule();
+      cancelBankDragApplySchedule();
+      if (visibilityRafId !== null) {
+        cancelAnimationFrame(visibilityRafId);
+        visibilityRafId = null;
+      }
+      cancelEnterDrain();
+      clearStagedLite();
+      setShowAttachSlotsChrome(false);
       registerCanvasElement(null);
     };
   });
@@ -646,12 +1185,18 @@
   });
 
   $effect(() => {
+    // Only re-cull when zoom/size/bank-count change — NOT pan.
+    // refreshCanvasVisibility reads viewport.panX/Y and membership state; without
+    // untrack those become effect deps and force a double-cull every pan sample
+    // (see C15-VIEWPERF: refreshCalls ≈ 2× panSamples).
     viewport.zoom;
     canvasWidth;
     canvasHeight;
     $banks.length;
     if (canvasWidth <= 0 || canvasHeight <= 0) return;
-    refreshCanvasVisibility(true);
+    untrack(() => {
+      refreshCanvasVisibility(true, 'effect');
+    });
   });
 
   $effect(() => {
@@ -669,12 +1214,31 @@
     const rect = canvasEl.getBoundingClientRect();
     const factor = event.deltaY > 0 ? 0.9 : 1.1;
     zoomAt(event.clientX - rect.left, event.clientY - rect.top, factor);
-    refreshCanvasVisibility(true);
+    // Zoom changes screen AABBs — cull immediately (sticky exit still applies).
+    refreshCanvasVisibility(true, 'wheel');
+    viewperfZoom({
+      zoom: viewport.zoom,
+      panX: viewport.panX,
+      panY: viewport.panY,
+      bankTotal: $banks.length,
+      visibleCount: visibleCanvasBankUuids.size,
+    });
   }
 
   function startPan(clientX: number, clientY: number): void {
     isPanning = true;
     lastPointer = { x: clientX, y: clientY };
+    panMembershipOrigin = { panX: viewport.panX, panY: viewport.panY };
+    viewperfPanStart({
+      zoom: viewport.zoom,
+      panX: viewport.panX,
+      panY: viewport.panY,
+      canvasW: canvasWidth,
+      canvasH: canvasHeight,
+      bankTotal: $banks.length,
+      visibleCount: visibleCanvasBankUuids.size,
+      source: 'pointer-pan',
+    });
   }
 
   function closePresetContextMenu(): void {
@@ -936,7 +1500,9 @@
     if (!isPanning) return;
     panBy(event.clientX - lastPointer.x, event.clientY - lastPointer.y);
     lastPointer = { x: event.clientX, y: event.clientY };
-    refreshCanvasVisibility();
+    viewperfPanSample();
+    // Keep pan transform immediate; coalesce cull to one pass per frame.
+    scheduleCanvasVisibility();
   }
 
   function onPointerUp(event: PointerEvent): void {
@@ -955,11 +1521,28 @@
     }
     panFromBackgroundLmb = false;
     isPanning = false;
-    refreshCanvasVisibility(true);
+    // Thaw membership after pan freeze (rate-limited enters).
+    refreshCanvasVisibility(true, 'pointerup');
+    viewperfPanEnd({
+      zoom: viewport.zoom,
+      panX: viewport.panX,
+      panY: viewport.panY,
+      reason: 'pointerup',
+    });
     canvasEl?.releasePointerCapture(event.pointerId);
   }
 
   function onKeyDown(event: KeyboardEvent): void {
+    // Live Ctrl/Meta for preset-drag helper (no pointer motion required).
+    if (
+      presetDrag?.active &&
+      (event.key === 'Control' ||
+        event.key === 'Meta' ||
+        event.ctrlKey ||
+        event.metaKey)
+    ) {
+      syncPresetDragMoveModeFromEvent(event);
+    }
     if (event.code === 'Escape' && !shouldIgnoreKeyboardShortcut(event.target)) {
       if (marqueePointerId !== null) {
         const pid = marqueePointerId;
@@ -983,17 +1566,19 @@
         if (bankDragGrab) {
           // Escape aborts without committing — clear session; undo group ends empty.
           const uuid = bankDragGrab.uuid;
+          cancelBankDragApplySchedule();
           bankDragActive = false;
           bankDragGrab = null;
           bankGesture = null;
           dragBaseDisplay = null;
           dragDisplayMap = null;
+          dragDisplayEpoch += 1;
           dragClusterUuids = null;
           activeDragStored = null;
           dockHover = null;
-          borderSnapHover = null;
-          borderSnapRole = null;
           slotVisibilityDraggedUuid = null;
+          dockCorridorCache = null;
+          setShowAttachSlotsChrome(false);
           stopEdgeScrollLoop();
           endUndoGroup();
           refreshCanvasVisibility(true);
@@ -1021,14 +1606,30 @@
         window.removeEventListener('pointerup', onPresetDragPointerUp);
         window.removeEventListener('pointercancel', onPresetDragPointerUp);
         log('preset', 'drag cancel', { reason: 'escape' });
-        presetDrag = null;
-        presetDropTarget = null;
-        presetHoverBank = null;
+        clearPresetDragSession();
+        if (!bankDragActive) stopEdgeScrollLoop();
         return;
       }
       selectBank(null);
       return;
     }
+  }
+
+  function onKeyUp(event: KeyboardEvent): void {
+    if (!presetDrag?.active) return;
+    if (
+      event.key === 'Control' ||
+      event.key === 'Meta' ||
+      event.key === 'Ctrl'
+    ) {
+      syncPresetDragMoveModeFromEvent(event);
+    }
+  }
+
+  function onWindowBlur(): void {
+    // Avoid stuck "move" helper after Alt-Tab while Ctrl was held.
+    if (!presetDrag?.active || !presetDrag.moveMode) return;
+    presetDrag = { ...presetDrag, moveMode: false };
   }
 
   function presetDragLabel(uuids: string[], sourceBankUuid: string): string {
@@ -1043,7 +1644,9 @@
 
   function updatePresetDragTargets(clientX: number, clientY: number): void {
     if (!presetDrag?.active || !canvasEl) return;
-    const rect = canvasEl.getBoundingClientRect();
+    // Use cached canvas rect (refreshed on resize) — avoid layout thrash every sample.
+    const rect = canvasRectLike();
+    if (rect.width <= 0 || rect.height <= 0) return;
     const hit = findPresetDropTarget(
       clientX,
       clientY,
@@ -1091,6 +1694,13 @@
 
     const drag = presetDrag;
     if (!drag || event.pointerId !== drag.pointerId) return;
+
+    // Commit latest coalesced hit-test so drop index matches last pointer sample.
+    if (drag.active) {
+      flushPresetDragHitTest();
+      // If deferred selection never ran (very short drag), ensure batch ran for consistency.
+      cancelPresetDragSelectSchedule();
+    }
 
     if (drag.active) {
       const target = presetDropTarget;
@@ -1148,37 +1758,49 @@
       });
     }
 
-    presetDrag = null;
-    presetDropTarget = null;
-    presetHoverBank = null;
+    clearPresetDragSession();
     if (!bankDragActive) stopEdgeScrollLoop();
   }
 
   function onPresetDragPointerMove(event: PointerEvent): void {
     if (!presetDrag || event.pointerId !== presetDrag.pointerId) return;
 
+    const moveMode = event.ctrlKey || event.metaKey;
+    // Lightweight: always update overlay position + modifier immediately (no hit-test).
     presetDrag = {
       ...presetDrag,
       clientX: event.clientX,
       clientY: event.clientY,
-      moveMode: event.ctrlKey || event.metaKey,
+      moveMode,
     };
 
     if (!presetDrag.active) {
       const dx = event.clientX - presetDrag.startClientX;
       const dy = event.clientY - presetDrag.startClientY;
       if (Math.hypot(dx, dy) < PRESET_DRAG_THRESHOLD_PX) return;
-      presetDrag = { ...presetDrag, active: true };
-      selectPresetsBatch(presetDrag.sourceBankUuid, presetDrag.presetUuids);
+      const label = presetDragLabel(
+        presetDrag.presetUuids,
+        presetDrag.sourceBankUuid,
+      );
+      presetDrag = { ...presetDrag, active: true, label };
+      // Defer store selection one frame so the drag chip paints before banks remap.
+      const sourceBankUuid = presetDrag.sourceBankUuid;
+      const presetUuids = presetDrag.presetUuids;
+      cancelPresetDragSelectSchedule();
+      presetDragSelectRafId = requestAnimationFrame(() => {
+        presetDragSelectRafId = null;
+        if (!presetDrag?.active) return;
+        selectPresetsBatch(sourceBankUuid, presetUuids);
+      });
       startEdgeScrollLoop();
       log('preset', 'drag start', {
-        source: presetDrag.sourceBankUuid,
-        count: presetDrag.presetUuids.length,
-        uuids: presetDrag.presetUuids,
+        source: sourceBankUuid,
+        count: presetUuids.length,
+        uuids: presetUuids,
       });
     }
 
-    updatePresetDragTargets(event.clientX, event.clientY);
+    schedulePresetDragHitTest(event.clientX, event.clientY, moveMode);
   }
 
   function onPresetDragPointerUp(event: PointerEvent): void {
@@ -1237,6 +1859,8 @@
       bankInSelection: get(bankMeta).selectedBankUuids.includes(bankUuid),
     });
 
+    cancelPresetDragHitTestSchedule();
+    cancelPresetDragSelectSchedule();
     presetDrag = {
       sourceBankUuid: bankUuid,
       presetUuids,
@@ -1250,6 +1874,7 @@
       shift: event.shiftKey,
       moveMode: event.ctrlKey || event.metaKey,
       active: false,
+      label: '',
     };
     presetDropTarget = null;
     presetHoverBank = null;
@@ -1270,18 +1895,15 @@
     return {
       clientX: presetDrag.clientX,
       clientY: presetDrag.clientY,
-      label: presetDragLabel(presetDrag.presetUuids, presetDrag.sourceBankUuid),
+      label: presetDrag.label || 'Preset',
       count: presetDrag.presetUuids.length,
       moveMode: presetDrag.moveMode,
     };
   });
 
   const presetDragBankHint = $derived.by(() => {
-    if (
-      !presetDrag?.active ||
-      viewport.zoom >= BANK_LOD_FULL_ZOOM ||
-      !presetHoverBank
-    ) {
+    // Lite cards hide preset rows — show bank name chip while dropping at low zoom.
+    if (!presetDrag?.active || bankLodMode(viewport.zoom) !== 'lite' || !presetHoverBank) {
       return null;
     }
     const bank = $banks[presetHoverBank.bankIndex];
@@ -1323,46 +1945,71 @@
     selectBank(uuid, 'replace');
   }
 
+  function scheduleBankDragApply(clientX: number, clientY: number): void {
+    pendingDragClient = { clientX, clientY };
+    if (bankDragApplyRafId !== null) return;
+    bankDragApplyRafId = requestAnimationFrame(() => {
+      bankDragApplyRafId = null;
+      const pending = pendingDragClient;
+      if (!pending || !bankDragGrab) return;
+      applyBankDragPointer(pending.clientX, pending.clientY);
+    });
+  }
+
+  /** Cancel pending rAF and apply the latest sample immediately (grab / end). */
+  function flushBankDragApply(): void {
+    if (bankDragApplyRafId !== null) {
+      cancelAnimationFrame(bankDragApplyRafId);
+      bankDragApplyRafId = null;
+    }
+    const pending = pendingDragClient;
+    pendingDragClient = null;
+    if (pending && bankDragGrab) {
+      applyBankDragPointer(pending.clientX, pending.clientY);
+    }
+  }
+
+  function cancelBankDragApplySchedule(): void {
+    if (bankDragApplyRafId !== null) {
+      cancelAnimationFrame(bankDragApplyRafId);
+      bankDragApplyRafId = null;
+    }
+    pendingDragClient = null;
+  }
+
   function applyBankDragPointer(clientX: number, clientY: number): void {
     if (!bankDragGrab || !canvasEl) return;
     timeApply(() => {
+      const grab = bankDragGrab;
+      if (!grab) return;
       const rect = canvasRectLike();
       const c15 = clientToC15(clientX, clientY, rect, viewport);
-      const rawX = c15.x - bankDragGrab!.offsetC15X;
-      const rawY = c15.y - bankDragGrab!.offsetC15Y;
+      const rawX = c15.x - grab.offsetC15X;
+      const rawY = c15.y - grab.offsetC15Y;
 
-      const dragged = $banks.find((b) => b.uuid === bankDragGrab!.uuid);
-      if (!dragged) return;
+      const applied = applyBankDragPointerPosition(rawX, rawY);
 
-      const applied = applyBankDragPointerPosition(dragged, rawX, rawY, {
-        showSynthZone: get(appSettings).showSynthZone,
-      });
-
-      borderSnapHover = applied.borderSnapEdge;
-      borderSnapRole = applied.borderSnapRole;
-      if (applied.borderSnapEdge) {
-        dockHover = null;
+      // Same grid cell as last apply — skip Map rebuild, reactive assign, dock.
+      if (
+        activeDragStored &&
+        activeDragStored.uuid === grab.uuid &&
+        activeDragStored.x === applied.dragX &&
+        activeDragStored.y === applied.dragY
+      ) {
+        return;
       }
 
-      const nextDisplay = computeDragDisplayMap(
-        bankDragGrab!.uuid,
+      const nextDisplay = updateLiveDragDisplayMap(
+        grab.uuid,
         applied.dragX,
         applied.dragY,
       );
-      dragDisplayMap = nextDisplay;
       activeDragStored = {
-        uuid: bankDragGrab!.uuid,
+        uuid: grab.uuid,
         x: applied.dragX,
         y: applied.dragY,
       };
-      if (!applied.borderSnapEdge) {
-        updateDockHover(
-          bankDragGrab!.uuid,
-          applied.dragX,
-          applied.dragY,
-          nextDisplay,
-        );
-      }
+      updateDockHover(grab.uuid, applied.dragX, applied.dragY, nextDisplay);
     });
   }
 
@@ -1487,13 +2134,19 @@
 
     const listAfter = get(banks);
     dragClusterUuids = plan.moveSet;
-    dragBaseDisplay = timeLayout(() => resolveDisplayPositions(listAfter));
+    const base = timeLayout(() => resolveDisplayPositions(listAfter));
+    dragBaseDisplay = base;
+    // One O(n) clone at grab; subsequent moves only rewrite cluster keys.
+    dragDisplayMap = new Map(base);
+    dragDisplayEpoch += 1;
     startBankDragPerfSession(listAfter, plan.moveSet.size, viewport.zoom);
 
     slotVisibilityDraggedUuid = uuid;
     dockHoverFrame = 0;
     lastDockDragX = info.originX;
     lastDockDragY = info.originY;
+    dockCorridorCache = new Map();
+    setShowAttachSlotsChrome(true);
     refreshCanvasVisibility(true);
     startEdgeScrollLoop();
     applyBankDragPointer(info.clientX, info.clientY);
@@ -1522,19 +2175,22 @@
         : new Set([draggedUuid]);
 
     // Ensure the pointer primary's live override is in the display map used for corridors.
-    const dragged = $banks.find((b) => b.uuid === draggedUuid);
-    if (!dragged) {
-      dockHover = null;
-      return;
-    }
     if (!dragDisplay.has(draggedUuid)) {
       dragDisplay = new Map(dragDisplay).set(draggedUuid, { x: dragX, y: dragY });
     }
 
+    // Same spatial prefilter as resolveBankDragEndDock (not viewport cull) so
+    // cyan hover and release dock choose the same target near edges / high zoom.
+    const candidateUuids = collectSpatialDockCandidateUuids(
+      $banks,
+      cluster,
+      dragDisplay,
+    );
     const dock = timeDock(() =>
       findDockTargetForDragCluster($banks, cluster, dragDisplay, {
-        candidateUuids: visibleCanvasBankUuids,
+        candidateUuids,
         excludeClusterUuids: cluster,
+        corridorCache: dockCorridorCache ?? undefined,
       }),
     );
 
@@ -1571,6 +2227,9 @@
       return;
     }
 
+    // Commit latest coalesced pointer sample before reading final origin.
+    flushBankDragApply();
+
     selTraceSelection('bank.drag-end', {
       primary: uuid.slice(0, 8),
       final: activeDragStored
@@ -1590,9 +2249,13 @@
     if (bankGesture?.uuid === uuid) bankGesture = null;
     dragBaseDisplay = null;
     dragDisplayMap = null;
+    dragDisplayEpoch += 1;
     dragClusterUuids = null;
     slotVisibilityDraggedUuid = null;
     dockHoverFrame = 0;
+    dockCorridorCache = null;
+    cancelBankDragApplySchedule();
+    setShowAttachSlotsChrome(false);
     if (!presetDrag?.active) stopEdgeScrollLoop();
 
     try {
@@ -1604,22 +2267,8 @@
         );
       }
 
-      if (borderSnapHover && final) {
-        const snappedBank = get(banks).find((b) => b.uuid === uuid);
-        log('border', 'snap commit', {
-          edge: borderSnapHover,
-          role: borderSnapRole,
-          bankUuid: uuid,
-          x: final.x,
-          y: final.y,
-          bankName: snappedBank?.name ?? null,
-        });
-      }
-
       activeDragStored = null;
       dockHover = null;
-      borderSnapHover = null;
-      borderSnapRole = null;
       endBankDragPerfSession();
       refreshCanvasVisibility(true);
 
@@ -1673,7 +2322,7 @@
   );
 </script>
 
-<svelte:window onkeydown={onKeyDown} />
+<svelte:window onkeydown={onKeyDown} onkeyup={onKeyUp} onblur={onWindowBlur} />
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <main
@@ -1729,7 +2378,7 @@
       style:transform="translate({viewport.panX}px, {viewport.panY}px) scale({viewport.zoom})"
     >
       {#if $appSettings.showSynthZone}
-        <SynthZoneOverlay activeEdge={borderSnapHover} />
+        <SynthZoneOverlay />
       {/if}
       {#if $appSettings.showDebugShapes}
         <CalibrationGuides />
@@ -1761,11 +2410,12 @@
             displayX={display.x}
             displayY={display.y}
             {index}
-            selected={$bankMeta.selectedBankUuids.includes(bank.uuid)}
+            selected={selectedBankUuidSet.has(bank.uuid)}
             userPositioned={$userPositionedUuids.has(bank.uuid)}
             suppressNameTooltip={presetDrag?.active === true}
             dockEdgeHighlight={dockEdge}
             dragging={bankDragGrab?.uuid === bank.uuid}
+            reduceSelectionGlow={bankDragActive}
             onbankpointerdown={(info) =>
               handleBankGestureStart(bank.uuid, info)}
           />
@@ -1775,9 +2425,9 @@
             displayX={display.x}
             displayY={display.y}
             {index}
-            selected={$bankMeta.selectedBankUuids.includes(bank.uuid)}
+            selected={selectedBankUuidSet.has(bank.uuid)}
             userPositioned={$userPositionedUuids.has(bank.uuid)}
-            showAttachSlots={bankDragActive && visibleCanvasBankUuids.has(bank.uuid)}
+            showAttachSlots={bankShowsAttachSlots(bank.uuid)}
             dockEdgeHighlight={dockEdge}
             presetDropHighlight={
               presetDrag?.active === true &&
@@ -1789,6 +2439,7 @@
                 : null
             }
             dragging={bankDragGrab?.uuid === bank.uuid}
+            reduceSelectionGlow={bankDragActive}
             onpresetpointerdown={handlePresetPointerDown}
             onpresetcontextmenu={handlePresetContextMenu}
             onbankpointerdown={(info) => handleBankGestureStart(bank.uuid, info)}

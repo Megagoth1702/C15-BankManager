@@ -18,12 +18,11 @@
   } from '../lib/search/presetSearch';
   import { presetSearchQuery, presetSearchState } from '../lib/search/searchState';
   import { PRESET_COLOR_NAMES } from '../lib/xml/presetAttributes';
-  import BankFilterDropdown from './BankFilterDropdown.svelte';
   import PresetBrowseList from './PresetBrowseList.svelte';
   import PresetSearchMatchBadges from './PresetSearchMatchBadges.svelte';
   import { focusRenameInput } from '../lib/ui/focusRenameInput';
 
-  let showSettings = $state(false);
+  let showSettings = $state(true);
   let inputFocused = $state(false);
   let dropdownFocused = $state(false);
   let highlightIndex = $state(0);
@@ -195,8 +194,9 @@
       {/each}
       <button
         type="button"
-        class="ml-auto rounded px-1.5 py-0.5 text-[13px] leading-none text-c15-text-muted hover:bg-c15-surface-raised hover:text-c15-text
-          {showSettings ? 'text-c15-accent' : ''}"
+        class="ml-auto rounded border border-c15-accent px-1.5 py-0.5 text-[13px] leading-none text-c15-accent
+          hover:bg-c15-accent/15 hover:text-c15-accent
+          {showSettings ? 'bg-c15-accent/10' : ''}"
         title="Search settings"
         onclick={() => {
           showSettings = !showSettings;
@@ -269,10 +269,6 @@
       </div>
     {/if}
 
-    <div class="mb-2">
-      <BankFilterDropdown />
-    </div>
-
     <div class="mb-2 flex items-center gap-1 text-[10px]">
       <button
         type="button"
@@ -280,6 +276,9 @@
           {$presetSearchState.sortBy === 'number'
           ? 'border-c15-accent text-c15-accent'
           : 'border-c15-border text-c15-text-muted'}"
+        title={$presetSearchState.sortBy === 'number'
+          ? `Sort by bank / preset number (${$presetSearchState.sortDirection === 'asc' ? 'low → high' : 'high → low'}). Click again to reverse.`
+          : 'Sort by bank / preset number. Click again to reverse order.'}
         onclick={() => setSort('number')}
       >
         # {$presetSearchState.sortBy === 'number' ? ($presetSearchState.sortDirection === 'asc' ? '↑' : '↓') : ''}
@@ -290,6 +289,9 @@
           {$presetSearchState.sortBy === 'name'
           ? 'border-c15-accent text-c15-accent'
           : 'border-c15-border text-c15-text-muted'}"
+        title={$presetSearchState.sortBy === 'name'
+          ? `Sort by preset name (${$presetSearchState.sortDirection === 'asc' ? 'A → Z' : 'Z → A'}). Click again to reverse.`
+          : 'Sort by preset name. Click again to reverse order.'}
         onclick={() => setSort('name')}
       >
         A {$presetSearchState.sortBy === 'name' ? ($presetSearchState.sortDirection === 'asc' ? '↑' : '↓') : ''}
@@ -300,6 +302,9 @@
           {$presetSearchState.sortBy === 'time'
           ? 'border-c15-accent text-c15-accent'
           : 'border-c15-border text-c15-text-muted'}"
+        title={$presetSearchState.sortBy === 'time'
+          ? `Sort by store time (${$presetSearchState.sortDirection === 'asc' ? 'oldest → newest' : 'newest → oldest'}). Click again to reverse.`
+          : 'Sort by store time. Click again to reverse order.'}
         onclick={() => setSort('time')}
       >
         T {$presetSearchState.sortBy === 'time' ? ($presetSearchState.sortDirection === 'asc' ? '↑' : '↓') : ''}

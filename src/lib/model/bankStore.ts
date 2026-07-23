@@ -119,6 +119,7 @@ export {
   setSidebarTab,
   setShowSynthZone,
   setShowDebugShapes,
+  setBankDetailMinZoom,
 } from './settingsCommands';
 
 export {

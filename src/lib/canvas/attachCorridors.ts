@@ -97,3 +97,32 @@ export function attachCorridorsForBank(
     },
   };
 }
+
+/** Session cache entry for dock hit-test (reuse corridors while origin is stable). */
+export type AttachCorridorCacheEntry = {
+  originX: number;
+  originY: number;
+  corridors: AttachCorridors;
+};
+
+export type AttachCorridorCache = Map<string, AttachCorridorCacheEntry>;
+
+/**
+ * Return attach corridors for `(bank, origin)`, reusing a session cache when the
+ * display origin is unchanged. Callers clear the map at drag end.
+ */
+export function attachCorridorsForBankCached(
+  cache: AttachCorridorCache | undefined,
+  bank: Bank,
+  originX: number,
+  originY: number,
+): AttachCorridors {
+  if (!cache) return attachCorridorsForBank(bank, originX, originY);
+  const prev = cache.get(bank.uuid);
+  if (prev && prev.originX === originX && prev.originY === originY) {
+    return prev.corridors;
+  }
+  const corridors = attachCorridorsForBank(bank, originX, originY);
+  cache.set(bank.uuid, { originX, originY, corridors });
+  return corridors;
+}

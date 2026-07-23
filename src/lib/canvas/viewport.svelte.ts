@@ -18,11 +18,24 @@ export const viewport = $state({
   zoom: 1,
 });
 
-const MIN_ZOOM = 0.04;
-const MAX_ZOOM = 4;
+/** Canvas zoom limits — shared by wheel zoom and the prefs-bar slider. */
+export const VIEWPORT_ZOOM = {
+  min: 0.04,
+  max: 4,
+  step: 0.01,
+  default: 1,
+} as const;
 
-function clampZoom(value: number): number {
+const MIN_ZOOM = VIEWPORT_ZOOM.min;
+const MAX_ZOOM = VIEWPORT_ZOOM.max;
+
+export function clampZoom(value: number): number {
+  if (!Number.isFinite(value)) return VIEWPORT_ZOOM.default;
   return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
+}
+
+export function formatCanvasZoomPercent(zoom: number): string {
+  return `${Math.round(clampZoom(zoom) * 100)}%`;
 }
 
 /** Pan so a world-space point sits in the canvas center (keeps current zoom). */
@@ -49,11 +62,43 @@ export function panBy(dx: number, dy: number): void {
 
 export function zoomAt(screenX: number, screenY: number, factor: number): void {
   const newZoom = clampZoom(viewport.zoom * factor);
+  if (newZoom === viewport.zoom) return;
   const worldX = (screenX - viewport.panX) / viewport.zoom;
   const worldY = (screenY - viewport.panY) / viewport.zoom;
 
   viewport.panX = screenX - worldX * newZoom;
   viewport.panY = screenY - worldY * newZoom;
+  viewport.zoom = newZoom;
+}
+
+/**
+ * Set absolute canvas zoom, keeping the world point under `screenX/Y` fixed.
+ * Coordinates are canvas-local (origin top-left of the canvas element), same as `zoomAt`.
+ * Defaults to canvas center when size is known; otherwise only updates zoom.
+ */
+export function setZoom(
+  zoom: number,
+  screenX?: number,
+  screenY?: number,
+  canvasWidth?: number,
+  canvasHeight?: number,
+): void {
+  const newZoom = clampZoom(zoom);
+  const w = canvasWidth ?? 0;
+  const h = canvasHeight ?? 0;
+  const sx = screenX ?? (w > 0 ? w / 2 : null);
+  const sy = screenY ?? (h > 0 ? h / 2 : null);
+
+  if (sx == null || sy == null || viewport.zoom === 0) {
+    viewport.zoom = newZoom;
+    return;
+  }
+  if (newZoom === viewport.zoom) return;
+
+  const worldX = (sx - viewport.panX) / viewport.zoom;
+  const worldY = (sy - viewport.panY) / viewport.zoom;
+  viewport.panX = sx - worldX * newZoom;
+  viewport.panY = sy - worldY * newZoom;
   viewport.zoom = newZoom;
 }
 

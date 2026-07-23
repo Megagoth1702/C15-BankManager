@@ -1,4 +1,5 @@
 import { bankCardVariant, bankLodMode, type BankLodMode } from '../canvas/lod';
+import { isAppDebugEnabled } from './debugFlags';
 import { log } from './sessionLog';
 import type { Bank } from '../types/bank';
 
@@ -24,6 +25,9 @@ export function recordBankRenderSnapshot(
   visibleUuids: ReadonlySet<string>,
   viewportZoom: number,
 ): void {
+  // Hot path (visibility / edge-scroll). Do not walk banks when debug is off.
+  if (!isAppDebugEnabled()) return;
+
   if (banks.length !== prevBankCount) {
     prevFullUuids = new Set();
     prevLodMode = null;

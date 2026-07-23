@@ -141,9 +141,42 @@ export function resolveDisplayPositions(
 }
 
 /**
- * During drag: shift the move set on a frozen base map by primary **display** Δ.
- * Pointer drag uses display-space targets (not stored XML origins).
- * Avoids full O(n) layout every frame when hundreds of banks are loaded.
+ * Hot path during bank drag: rewrite only cluster keys on a live map from frozen
+ * base positions + primary display Δ. O(cluster) — no full Map copy, no bank scan.
+ * Returns whether any cluster entry changed (for reactivity triggers).
+ */
+export function applyDragClusterDisplayPositions(
+  live: DisplayPositionMap,
+  baseDisplay: DisplayPositionMap,
+  draggedUuid: string,
+  dragX: number,
+  dragY: number,
+  moveUuids: ReadonlySet<string>,
+): boolean {
+  const basePrimary = baseDisplay.get(draggedUuid);
+  if (!basePrimary) return false;
+
+  const dx = dragX - basePrimary.x;
+  const dy = dragY - basePrimary.y;
+  let changed = false;
+
+  for (const uuid of moveUuids) {
+    const basePos = baseDisplay.get(uuid);
+    if (!basePos) continue;
+    const nx = basePos.x + dx;
+    const ny = basePos.y + dy;
+    const cur = live.get(uuid);
+    if (cur && cur.x === nx && cur.y === ny) continue;
+    live.set(uuid, { x: nx, y: ny });
+    changed = true;
+  }
+  return changed;
+}
+
+/**
+ * Immutable variant: shift the move set on a frozen base map by primary **display** Δ.
+ * Prefer {@link applyDragClusterDisplayPositions} on the drag hot path (avoids O(n) copy).
+ * When `moveUuids` is omitted, descendants of the primary are collected (O(n) scan).
  */
 export function resolveDragClusterDisplayPositions(
   bankList: Bank[],
@@ -153,13 +186,32 @@ export function resolveDragClusterDisplayPositions(
   baseDisplay: DisplayPositionMap,
   moveUuids?: ReadonlySet<string>,
 ): DisplayPositionMap {
-  const byUuid = buildBankMap(bankList);
-  const bank = byUuid.get(draggedUuid);
-  if (!bank) return baseDisplay;
+  const basePrimary = baseDisplay.get(draggedUuid);
+  if (!basePrimary) {
+    // Missing primary in base — only then fall back to bank list lookup.
+    const bank = bankList.find((b) => b.uuid === draggedUuid);
+    if (!bank) return baseDisplay;
+    const base = { x: bank.x, y: bank.y };
+    const dx = dragX - base.x;
+    const dy = dragY - base.y;
+    if (dx === 0 && dy === 0) return baseDisplay;
+    const cluster =
+      moveUuids ??
+      new Set([
+        draggedUuid,
+        ...collectClusterDescendantUuids(draggedUuid, bankList),
+      ]);
+    const result = new Map(baseDisplay);
+    for (const uuid of cluster) {
+      const pos = result.get(uuid) ?? (uuid === draggedUuid ? base : undefined);
+      if (!pos) continue;
+      result.set(uuid, { x: pos.x + dx, y: pos.y + dy });
+    }
+    return result;
+  }
 
-  const base = baseDisplay.get(draggedUuid) ?? { x: bank.x, y: bank.y };
-  const dx = dragX - base.x;
-  const dy = dragY - base.y;
+  const dx = dragX - basePrimary.x;
+  const dy = dragY - basePrimary.y;
   if (dx === 0 && dy === 0) return baseDisplay;
 
   const cluster =

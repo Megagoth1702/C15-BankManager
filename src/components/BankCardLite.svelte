@@ -29,6 +29,8 @@
     attachDropTarget?: boolean;
     dockEdgeHighlight?: DockEdge | null;
     dragging?: boolean;
+    /** Drop multi-layer selection glow while a bank drag is active. */
+    reduceSelectionGlow?: boolean;
     suppressNameTooltip?: boolean;
     /**
      * Bank drag/select gesture start — Canvas tracks move/up on window.
@@ -55,6 +57,7 @@
     attachDropTarget = false,
     dockEdgeHighlight = null,
     dragging = false,
+    reduceSelectionGlow = false,
     onbankpointerdown,
   }: Props = $props();
 
@@ -92,7 +95,7 @@
   );
 
   const bodyShadow = $derived(
-    selected
+    selected && !reduceSelectionGlow
       ? `0 0 0 ${Math.max(1, 2 * scale)}px var(--color-c15-bank-selected-glow), 0 0 ${12 * scale}px ${6 * scale}px rgba(173, 181, 217, 0.45)`
       : 'none',
   );

@@ -63,8 +63,18 @@ export function clearBankSelectionFields<
 }
 
 export function syncBankSelectedPreset(bankUuid: string, presetUuid: string): void {
-  banks.update((list) =>
-    list.map((b) =>
+  const list = getBanksSnapshot();
+  const bank = findByUuid(list, bankUuid);
+  // Skip full banks[] rewrite when primary is already correct (hot path: preset drag start).
+  if (
+    bank &&
+    bank.selectedPreset != null &&
+    bank.selectedPreset.toLowerCase() === presetUuid.toLowerCase()
+  ) {
+    return;
+  }
+  banks.update((prev) =>
+    prev.map((b) =>
       b.uuid === bankUuid ? { ...b, selectedPreset: presetUuid } : b,
     ),
   );

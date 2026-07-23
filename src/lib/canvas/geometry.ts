@@ -42,22 +42,6 @@ export const BANK_LAYOUT = {
   emptyBankBodyRows: 1,
 };
 
-/**
- * Proximity helpers for **synth border snap** (`borderSnapHitTest`).
- * Bank–bank docking uses attach-corridor rectangle overlap instead
- * (`attachCorridors` + `dockHitTest`) and does not read these fields.
- */
-export const DOCK_DETECTION = {
-  /** Centered band (fraction of outer/placement span) for perpendicular alignment. */
-  alignBandRatio: 0.5,
-  /** Max separation to a synth border edge (C15 units). */
-  proximityThreshold: BANK_LAYOUT.tapeSize * 0.75,
-  /** Max penetration past a facing edge (fraction of smaller bank width/height). */
-  maxOverlapRatio: 0.85,
-  /** Min overlap on perpendicular axis within the align band. */
-  minAlignOverlap: BANK_LAYOUT.headerHeight * 0.5,
-};
-
 /** Outer bank width: inner 180 + tapes 40×2 = 260. */
 export function bankOuterWidth(): number {
   return BANK_LAYOUT.innerWidth + 2 * BANK_LAYOUT.tapeSize;

@@ -1,4 +1,5 @@
 import { get, writable } from 'svelte/store';
+import { BANK_LOD_THRESHOLD } from '../canvas/lod';
 import type { Bank } from '../types/bank';
 
 export type ImportMode = 'replace' | 'merge' | 'folder';
@@ -45,6 +46,11 @@ export const appSettings = writable({
   showSynthZone: true,
   /** When true, show calibration crosses and width-calib debug rulers. */
   showDebugShapes: false,
+  /**
+   * Canvas zoom below which bank cards simplify (no preset rows).
+   * Default matches pixel-based LOD policy (~73%). Higher = simplify earlier.
+   */
+  bankDetailMinZoom: BANK_LOD_THRESHOLD.default,
   sidebarWidthPx: 224,
   sidebarTab: 'banks' as 'banks' | 'presets',
 });
