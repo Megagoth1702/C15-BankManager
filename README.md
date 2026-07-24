@@ -1,6 +1,6 @@
 # C15 Offline Preset Manager
 
-Manage Nonlinear Labs C15 preset banks completely offline — without the instrument.
+Manage Nonlinear Labs C15 preset banks completely offline - without the instrument.
 
 **[Open the app](https://megagoth1702.github.io/C15-OfflinePresetManager/)**
 
@@ -61,7 +61,7 @@ Everything stays in the browser. No data leaves your machine.
 ---
 ### Technical notes
 
-- **100% client-side** — all processing happens in your browser
+- **100% client-side**, all processing happens in your browser
 - **Round-trip fidelity** is guaranteed. If a duplicate bank or preset ID is detected on import, a new unique ID is generated automatically
 - Very large libraries (full 8,559 presets) can use noticeable RAM and show minor jank under some conditions
 ---
