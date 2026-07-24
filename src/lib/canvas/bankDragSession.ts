@@ -9,7 +9,6 @@ import {
   findDockTargetForDragCluster,
   type ClusterDockHit,
 } from './dockHitTest';
-import { snapToGrid } from '../model/bankFactory';
 
 export type BankDragPointerResult = {
   dragX: number;
@@ -17,15 +16,17 @@ export type BankDragPointerResult = {
 };
 
 /**
- * Snap drag origin to the C15 grid (15 units). No synth-zone border magnet.
+ * Live drag origin follows the pointer in C15 space (pixel-perfect, no grid snap).
+ * Grid snap is applied on release via `moveBankTo` / `setBankOrigin`.
+ * No synth-zone border magnet.
  */
 export function applyBankDragPointerPosition(
   rawX: number,
   rawY: number,
 ): BankDragPointerResult {
   return {
-    dragX: snapToGrid(rawX),
-    dragY: snapToGrid(rawY),
+    dragX: rawX,
+    dragY: rawY,
   };
 }
 

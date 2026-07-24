@@ -5,7 +5,6 @@ import {
 } from './displayPosition';
 import {
   BANK_LAYOUT,
-  bankToWorldRectAt,
   C15_SCALE,
   computeWorldBoundsAt,
   effectiveFacingWidth,
@@ -135,7 +134,8 @@ export function fitBanksToView(
 }
 
 /**
- * Center the viewport on a bank's on-screen position (display coords for attached banks).
+ * Center the viewport on a bank's header (display coords for attached banks).
+ * Keeps the current zoom — only pan changes.
  * Pass `allBanks` when available so attachment layout is resolved correctly.
  */
 export function focusBank(
@@ -144,13 +144,18 @@ export function focusBank(
   canvasHeight: number,
   allBanks?: readonly Bank[],
 ): void {
+  if (canvasWidth <= 0 || canvasHeight <= 0) return;
+
   const bankList = allBanks ?? [bank];
   const displayByUuid = resolveDisplayPositions([...bankList]);
   const origin = getDisplayPosition(bank, displayByUuid);
-  const rect = bankToWorldRectAt(bank, origin.x, origin.y);
+  const centerXC15 = origin.x + effectiveFacingWidth(bank) / 2;
+  const centerYC15 =
+    origin.y + BANK_LAYOUT.tapeSize + BANK_LAYOUT.headerHeight / 2;
+
   centerViewportOnWorld(
-    rect.x + rect.width / 2,
-    rect.y + rect.height / 2,
+    centerXC15 * C15_SCALE,
+    centerYC15 * C15_SCALE,
     canvasWidth,
     canvasHeight,
   );

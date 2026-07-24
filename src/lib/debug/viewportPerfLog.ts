@@ -63,6 +63,7 @@ export type ViewperfVisibilitySource =
   | 'wheel'
   | 'enter-drain'
   | 'delta-thaw'
+  | 'focus'
   | 'other';
 
 let panSession: PanSession | null = null;

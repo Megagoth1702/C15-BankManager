@@ -230,6 +230,12 @@
   let enterDrainRafId: number | null = null;
   /** Pan origin for delta-thaw escape hatch (half-canvas pan forces re-cull). */
   let panMembershipOrigin = { panX: 0, panY: 0 };
+  /**
+   * One-shot pin while programmatically focusing a bank (sidebar / preset list).
+   * Focus only pans; the pan-independent visibility effect would leave a previously
+   * culled bank unmounted at the new center without a forced membership pass + pin.
+   */
+  let focusPinUuid: string | null = null;
   /** Fraction of min(canvasW,H) pan distance before mid-pan membership thaw. */
   const PAN_DELTA_THAW_RATIO = 0.5;
   let dockHoverFrame = 0;
@@ -327,7 +333,7 @@
   });
 
   const displayByUuid = $derived.by((): DisplayPositionMap => {
-    // During drag, dragDisplayMap is reassigned (new Map) on each moved grid cell
+    // During drag, dragDisplayMap is reassigned (new Map) on each moved sample
     // so this derived's === output changes and cards/lines re-read positions.
     // In-place Map.set alone is not enough under Svelte 5 $derived.
     if (bankDragActive && dragDisplayMap) return dragDisplayMap;
@@ -429,6 +435,7 @@
     }
     if (presetDropTarget) always.add(presetDropTarget.bankUuid);
     if (presetHoverBank) always.add(presetHoverBank.bankUuid);
+    if (focusPinUuid) always.add(focusPinUuid);
     return always;
   }
 
@@ -1189,6 +1196,13 @@
       focusBankUuid: null,
       focusPresetUuid: null,
     }));
+    // Programmatic pan does not re-trigger the pan-independent visibility effect.
+    // Force membership so a previously culled bank remounts at the new center.
+    focusPinUuid = uuid;
+    untrack(() => {
+      refreshCanvasVisibility(true, 'focus');
+    });
+    focusPinUuid = null;
   });
 
   $effect(() => {
@@ -2029,9 +2043,10 @@
       const rawX = c15.x - grab.offsetC15X;
       const rawY = c15.y - grab.offsetC15Y;
 
+      // Live drag is free (no grid snap); snap runs on release in moveBankTo.
       const applied = applyBankDragPointerPosition(rawX, rawY);
 
-      // Same grid cell as last apply — skip Map rebuild, reactive assign, dock.
+      // Same C15 origin as last apply — skip Map rebuild, reactive assign, dock.
       if (
         activeDragStored &&
         activeDragStored.uuid === grab.uuid &&

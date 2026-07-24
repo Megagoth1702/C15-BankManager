@@ -287,12 +287,17 @@ export function selectBank(
     // Toggle deselect of last bank leaves no selection to reveal.
     const reveal =
       surface === 'canvas' && primary != null ? primary : null;
+    // Sidebar bank pick → pan canvas to that bank's header (zoom unchanged).
+    const focusTarget =
+      surface === 'sidebar' && uuid !== null && next.includes(uuid) ? uuid : null;
     return {
       ...cleared,
       selectedBankUuids: next,
       deleteFocus: uuid !== null && next.length > 0 ? 'bank' : null,
       selectionSurface: surface,
       revealSidebarBankUuid: reveal,
+      focusBankUuid: focusTarget ?? cleared.focusBankUuid,
+      focusPresetUuid: focusTarget ? null : cleared.focusPresetUuid,
       renamingBankUuid:
         cleared.renamingBankUuid && primary && cleared.renamingBankUuid !== primary
           ? null
@@ -339,6 +344,8 @@ export function selectBankRange(
       deleteFocus: 'bank',
       selectionSurface: 'sidebar',
       revealSidebarBankUuid: null,
+      focusBankUuid: uuid,
+      focusPresetUuid: null,
     }));
     log('store', 'selectBankRange', { uuid, lo, hi });
     return;

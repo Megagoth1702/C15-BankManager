@@ -1,6 +1,7 @@
 /**
  * Import file / folder / mass-import orchestration into the bank store.
  */
+import { get } from 'svelte/store';
 import {
   logPositionChanges,
   logPositionSnapshot,
@@ -24,7 +25,7 @@ import {
   getCanvasScreenSize,
   positionBanksAtViewportCenter,
 } from '../canvas/pointerPosition';
-import { fitBanksToView, viewport } from '../canvas/viewport.svelte';
+import { focusBank, viewport } from '../canvas/viewport.svelte';
 import { isFolderParentBank } from '../layout/smartLayout';
 import type { Bank, PresetManagerDoc } from '../types/bank';
 import { parseFileBytes } from '../xml/parse';
@@ -50,16 +51,28 @@ import { setShowSynthZone } from './settingsCommands';
 import { clearHistory } from './undoHistory';
 
 /**
- * After mass import: frame the newly imported banks and select the folder-root bank.
+ * After mass import: select the folder-root bank and pan to its header.
+ * Keeps the user's current zoom (no fit-to-content).
  * Multiple roots → top-left-most folder parent (layout pack order).
  */
 function focusMassImportResult(importedBanks: Bank[]): void {
   if (importedBanks.length === 0) return;
 
+  const roots = importedBanks.filter(isFolderParentBank);
+  const pickFrom = roots.length > 0 ? roots : importedBanks;
+  const primary = [...pickFrom].sort((a, b) => a.y - b.y || a.x - b.x)[0];
+  if (!primary) return;
+
+  selectBank(primary.uuid, 'replace', 'canvas');
+
   const size = getCanvasScreenSize();
   if (size && size.width > 0 && size.height > 0) {
-    fitBanksToView(importedBanks, size.width, size.height);
-    log('import', 'fitImportedBanks', {
+    // Full session list so attached display positions resolve correctly.
+    const allBanks = get(banks);
+    focusBank(primary, size.width, size.height, allBanks);
+    log('import', 'centerImportedRoot', {
+      uuid: primary.uuid,
+      name: primary.name,
       count: importedBanks.length,
       zoom: viewport.zoom,
       panX: viewport.panX,
@@ -68,18 +81,12 @@ function focusMassImportResult(importedBanks: Bank[]): void {
     });
   }
 
-  const roots = importedBanks.filter(isFolderParentBank);
-  const pickFrom = roots.length > 0 ? roots : importedBanks;
-  const primary = [...pickFrom].sort((a, b) => a.y - b.y || a.x - b.x)[0];
-  if (primary) {
-    selectBank(primary.uuid, 'replace', 'canvas');
-    log('import', 'selectImportRoot', {
-      uuid: primary.uuid,
-      name: primary.name,
-      isFolderParent: isFolderParentBank(primary),
-      rootCount: roots.length,
-    });
-  }
+  log('import', 'selectImportRoot', {
+    uuid: primary.uuid,
+    name: primary.name,
+    isFolderParent: isFolderParentBank(primary),
+    rootCount: roots.length,
+  });
 }
 
 function applyImportHealing(bankList: Bank[]): Bank[] {
