@@ -20,6 +20,7 @@
   import { PRESET_COLOR_NAMES } from '../lib/xml/presetAttributes';
   import PresetBrowseList from './PresetBrowseList.svelte';
   import PresetSearchMatchBadges from './PresetSearchMatchBadges.svelte';
+  import SidebarPresetInfoTooltip from './SidebarPresetInfoTooltip.svelte';
   import { focusRenameInput } from '../lib/ui/focusRenameInput';
 
   let showSettings = $state(true);
@@ -27,6 +28,12 @@
   let dropdownFocused = $state(false);
   let highlightIndex = $state(0);
   let presetRenameDraft = $state('');
+  let infoTooltip = $state<{
+    bankName: string;
+    comment: string;
+    x: number;
+    y: number;
+  } | null>(null);
 
   let searchInput: HTMLInputElement | undefined = $state();
   let dropdownEl: HTMLDivElement | undefined = $state();
@@ -94,6 +101,7 @@
   }
 
   function activate(entry: PresetSearchEntry): void {
+    hideInfoTooltip();
     selectBank(entry.bankUuid, 'replace', 'sidebar');
     selectPreset(entry.bankUuid, entry.presetUuid, { surface: 'sidebar' });
     bankMeta.update((m) => ({
@@ -129,6 +137,32 @@
       target?.bankUuid === entry.bankUuid &&
       target?.presetUuid === entry.presetUuid
     );
+  }
+
+  function entryHasComment(entry: PresetSearchEntry): boolean {
+    return entry.comment.trim().length > 0;
+  }
+
+  function showInfoTooltip(entry: PresetSearchEntry, event: PointerEvent): void {
+    infoTooltip = {
+      bankName: entry.bankName,
+      comment: entry.comment,
+      x: event.clientX,
+      y: event.clientY,
+    };
+  }
+
+  function moveInfoTooltip(event: PointerEvent): void {
+    if (!infoTooltip) return;
+    infoTooltip = {
+      ...infoTooltip,
+      x: event.clientX,
+      y: event.clientY,
+    };
+  }
+
+  function hideInfoTooltip(): void {
+    infoTooltip = null;
   }
 
   function onInputKeyDown(event: KeyboardEvent): void {
@@ -364,6 +398,7 @@
                 {@const entry = result.entry}
                 {@const tag = presetColorFromName(entry.color)}
                 {@const renaming = isRenamingEntry(entry)}
+                {@const comment = entryHasComment(entry)}
                 <li data-highlight-index={i}>
                   {#if renaming}
                     <div class="flex items-stretch px-2 py-1">
@@ -394,12 +429,15 @@
                       type="button"
                       role="option"
                       aria-selected={i === highlightIndex}
-                      class="flex w-full items-stretch text-left text-xs transition-colors
+                      class="relative flex w-full items-stretch text-left text-xs transition-colors
                         {i === highlightIndex
                         ? 'bg-c15-preset-selected text-c15-text'
                         : 'text-c15-text hover:bg-c15-surface'}"
                       onmousedown={(e) => e.preventDefault()}
                       onclick={() => activate(entry)}
+                      onpointerenter={(e) => showInfoTooltip(entry, e)}
+                      onpointermove={moveInfoTooltip}
+                      onpointerleave={hideInfoTooltip}
                     >
                       <span
                         class="w-1 shrink-0"
@@ -412,6 +450,14 @@
                         matched={result.matchedFields}
                         highlighted={i === highlightIndex}
                       />
+                      {#if comment}
+                        <span
+                          class="pointer-events-none shrink-0 self-center pr-1.5 text-[10px] font-bold leading-none text-yellow-400"
+                          aria-hidden="true"
+                        >
+                          C
+                        </span>
+                      {/if}
                     </button>
                   {/if}
                 </li>
@@ -431,6 +477,20 @@
       <p class="text-center text-xs text-c15-text-muted">Import banks to search presets</p>
     </div>
   {:else}
-    <PresetBrowseList entries={browseResults} />
+    <PresetBrowseList
+      entries={browseResults}
+      onrowpointerenter={showInfoTooltip}
+      onrowpointermove={moveInfoTooltip}
+      onrowpointerleave={hideInfoTooltip}
+    />
   {/if}
 </div>
+
+{#if infoTooltip}
+  <SidebarPresetInfoTooltip
+    bankName={infoTooltip.bankName}
+    comment={infoTooltip.comment}
+    x={infoTooltip.x}
+    y={infoTooltip.y}
+  />
+{/if}

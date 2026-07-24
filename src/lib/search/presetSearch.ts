@@ -19,6 +19,7 @@ export interface PresetSearchOptions {
 export interface PresetSearchEntry {
   presetUuid: string;
   bankUuid: string;
+  bankName: string;
   bankOrder: number;
   presetIndex: number;
   name: string;
@@ -72,7 +73,7 @@ export function buildPresetSearchIndex(banks: readonly Bank[]): PresetSearchEntr
     bank.presetOrder.forEach((uuid, index) => {
       const preset = presetsByUuid.get(uuid.toLowerCase());
       if (!preset) return;
-      entries.push(toSearchEntry(bank.uuid, bankOrder, index + 1, preset));
+      entries.push(toSearchEntry(bank.uuid, bank.name, bankOrder, index + 1, preset));
     });
   }
 
@@ -81,6 +82,7 @@ export function buildPresetSearchIndex(banks: readonly Bank[]): PresetSearchEntr
 
 function toSearchEntry(
   bankUuid: string,
+  bankName: string,
   bankOrder: number,
   presetIndex: number,
   preset: Preset,
@@ -88,6 +90,7 @@ function toSearchEntry(
   return {
     presetUuid: preset.uuid,
     bankUuid,
+    bankName,
     bankOrder,
     presetIndex,
     name: preset.name,

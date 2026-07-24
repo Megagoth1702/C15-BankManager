@@ -104,7 +104,9 @@
     selectBanks,
     selectPreset,
     selectPresetsBatch,
+    getPrimarySelectedUuid,
     resolveBankContextMenuSelection,
+    startRenameBank,
     userPositionedUuids,
   } from '../lib/model/bankStore';
   import {
@@ -301,7 +303,7 @@
   } | null>(null);
 
   /**
-   * Canvas right-click menu: empty canvas (create + export) or bank header (export only).
+   * Canvas right-click menu: empty canvas (create + export) or bank header (rename + export).
    * `c15X`/`c15Y` only used when placing a new bank from empty canvas.
    */
   let canvasContextMenu = $state<{
@@ -1350,6 +1352,13 @@
       x: bank.x,
       y: bank.y,
     });
+  }
+
+  function handleRenameBankFromContextMenu(): void {
+    const uuid = getPrimarySelectedUuid();
+    if (!uuid) return;
+    startRenameBank(uuid, 'canvas');
+    log('canvas', 'rename bank from context menu', { uuid });
   }
 
   function handleExportAllFromContextMenu(): void {
@@ -2511,6 +2520,7 @@
       selectedCount={$bankMeta.selectedBankUuids.length}
       showCreateBank={canvasContextMenu.showCreateBank}
       oncreatebank={handleCreateBankFromContextMenu}
+      onrenamebank={handleRenameBankFromContextMenu}
       onexportall={handleExportAllFromContextMenu}
       onexportselected={handleExportSelectedFromContextMenu}
       onexportselectedxml={handleExportSelectedXmlFromContextMenu}

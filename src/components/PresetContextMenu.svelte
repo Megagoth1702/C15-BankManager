@@ -194,7 +194,7 @@
     disabled={!canRename}
     onclick={handleRename}
   >
-    Rename
+    Rename preset
   </button>
 
   <!-- Flyouts flush to parent (no ml gap) so mouseleave does not dismiss mid-travel -->

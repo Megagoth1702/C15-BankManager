@@ -14,11 +14,13 @@
     /** Count of selected banks; 0 hides selected-export items. */
     selectedCount?: number;
     /**
-     * Empty-canvas menu includes Create new bank; bank-header menu is export-only.
-     * Default true for empty canvas.
-     */
+   * Empty-canvas menu includes Create new bank; bank-header menu adds Rename bank.
+   * Default true for empty canvas.
+   */
     showCreateBank?: boolean;
     oncreatebank?: () => void;
+    /** Bank-header menu: same as F2 — inline rename on primary selected bank. */
+    onrenamebank?: () => void;
     onexportall?: () => void;
     onexportselected?: () => void;
     onexportselectedxml?: () => void;
@@ -32,6 +34,7 @@
     selectedCount = 0,
     showCreateBank = true,
     oncreatebank,
+    onrenamebank,
     onexportall,
     onexportselected,
     onexportselectedxml,
@@ -44,6 +47,8 @@
   const selectedXmlLabel = $derived(exportSelectedBanksAsXmlLabel(selectedCount));
   const showSelectedExport = $derived(selectedCount > 0);
   const showExportSection = $derived(canExportAll || showSelectedExport);
+  /** Bank-header mode: rename primary selected bank (F2 equivalent). */
+  const showRenameBank = $derived(!showCreateBank && selectedCount > 0);
 
   /** Cursor-anchored popups must not use `.app-ui { zoom }` — it offsets fixed coords. */
   function placeMenuAtCursor(): void {
@@ -80,11 +85,18 @@
     canExportAll;
     selectedCount;
     showCreateBank;
+    showRenameBank;
     placeMenuAtCursor();
   });
 
   function handleCreateBank(): void {
     oncreatebank?.();
+    onclose?.();
+  }
+
+  function handleRenameBank(): void {
+    if (!showRenameBank) return;
+    onrenamebank?.();
     onclose?.();
   }
 
@@ -126,8 +138,18 @@
     </button>
   {/if}
 
+  {#if showRenameBank}
+    <button
+      type="button"
+      class="w-full px-3 py-1.5 text-left text-xs text-c15-text transition-colors hover:bg-c15-surface hover:text-c15-accent"
+      onclick={handleRenameBank}
+    >
+      Rename bank
+    </button>
+  {/if}
+
   {#if showExportSection}
-    {#if showCreateBank}
+    {#if showCreateBank || showRenameBank}
       <div class="my-1 border-t border-c15-border/60" role="separator"></div>
     {/if}
     {#if canExportAll}
