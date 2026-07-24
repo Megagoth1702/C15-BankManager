@@ -23,11 +23,15 @@ export interface AttachCorridorRect {
 
 export type AttachCorridors = Record<AttachCorridorId, AttachCorridorRect>;
 
+export type Rect2 = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
 /** Axis-aligned positive intersection area of two rects (0 if only touching). */
-export function rectOverlapArea(
-  a: { x: number; y: number; width: number; height: number },
-  b: { x: number; y: number; width: number; height: number },
-): number {
+export function rectOverlapArea(a: Rect2, b: Rect2): number {
   const overlapW =
     Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
   const overlapH =
@@ -36,14 +40,37 @@ export function rectOverlapArea(
   return overlapW * overlapH;
 }
 
+/**
+ * Positive AABB intersection of two rects, or null if they only touch / miss.
+ * Used for pointer-distance ranking of corridor docks.
+ */
+export function rectOverlapAabb(a: Rect2, b: Rect2): Rect2 | null {
+  const x = Math.max(a.x, b.x);
+  const y = Math.max(a.y, b.y);
+  const width = Math.min(a.x + a.width, b.x + b.width) - x;
+  const height = Math.min(a.y + a.height, b.y + b.height) - y;
+  if (width <= 0 || height <= 0) return null;
+  return { x, y, width, height };
+}
+
 /** Center of a corridor rect (for dock tie-break distance). */
-export function rectCenter(r: {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}): { x: number; y: number } {
+export function rectCenter(r: Rect2): { x: number; y: number } {
   return { x: r.x + r.width * 0.5, y: r.y + r.height * 0.5 };
+}
+
+/**
+ * Squared distance from a point to the closest point on an AABB (0 if inside).
+ */
+export function distSqPointToRect(
+  px: number,
+  py: number,
+  r: Rect2,
+): number {
+  const cx = Math.min(Math.max(px, r.x), r.x + r.width);
+  const cy = Math.min(Math.max(py, r.y), r.y + r.height);
+  const dx = px - cx;
+  const dy = py - cy;
+  return dx * dx + dy * dy;
 }
 
 /**

@@ -241,6 +241,8 @@
   let dockHoverFrame = 0;
   let lastDockDragX = 0;
   let lastDockDragY = 0;
+  /** Last pointer sample in C15 space during bank drag (dock ranking + release). */
+  let lastDragPointerC15: { x: number; y: number } | null = null;
   /**
    * Coalesce high-rate pointermove samples to one bank-drag apply per frame.
    * Edge-scroll tick already runs at rAF and calls apply directly.
@@ -2066,7 +2068,14 @@
         x: applied.dragX,
         y: applied.dragY,
       };
-      updateDockHover(grab.uuid, applied.dragX, applied.dragY, nextDisplay);
+      lastDragPointerC15 = { x: c15.x, y: c15.y };
+      updateDockHover(
+        grab.uuid,
+        applied.dragX,
+        applied.dragY,
+        nextDisplay,
+        lastDragPointerC15,
+      );
     });
   }
 
@@ -2202,6 +2211,7 @@
     dockHoverFrame = 0;
     lastDockDragX = info.originX;
     lastDockDragY = info.originY;
+    lastDragPointerC15 = { x: c15.x, y: c15.y };
     dockCorridorCache = new Map();
     setShowAttachSlotsChrome(true);
     refreshCanvasVisibility(true);
@@ -2214,6 +2224,7 @@
     dragX: number,
     dragY: number,
     dragDisplay: DisplayPositionMap,
+    pointerC15?: { x: number; y: number } | null,
   ): void {
     dockHoverFrame++;
     const delta = Math.hypot(dragX - lastDockDragX, dragY - lastDockDragY);
@@ -2238,6 +2249,7 @@
 
     // Same spatial prefilter as resolveBankDragEndDock (not viewport cull) so
     // cyan hover and release dock choose the same target near edges / high zoom.
+    // Pointer ranks among valid corridor overlaps (nearest mouse wins).
     const candidateUuids = collectSpatialDockCandidateUuids(
       $banks,
       cluster,
@@ -2248,6 +2260,7 @@
         candidateUuids,
         excludeClusterUuids: cluster,
         corridorCache: dockCorridorCache ?? undefined,
+        pointerC15: pointerC15 ?? undefined,
       }),
     );
 
@@ -2300,6 +2313,15 @@
     const final = activeDragStored;
     const clusterExclude = dragClusterUuids;
     const moveUuids = dragClusterUuids ? [...dragClusterUuids] : undefined;
+    // Capture before clearing session state so release matches cyan hover (WYSIWYG).
+    const endPointerC15 = lastDragPointerC15;
+    const preferredDock = dockHover
+      ? {
+          memberUuid: dockHover.draggedUuid,
+          targetUuid: dockHover.targetUuid,
+          dockEdge: dockHover.dockEdge,
+        }
+      : null;
 
     bankDragActive = false;
     bankDragGrab = null;
@@ -2311,6 +2333,7 @@
     slotVisibilityDraggedUuid = null;
     dockHoverFrame = 0;
     dockCorridorCache = null;
+    lastDragPointerC15 = null;
     cancelBankDragApplySchedule();
     setShowAttachSlotsChrome(false);
     if (!presetDrag?.active) stopEdgeScrollLoop();
@@ -2335,12 +2358,15 @@
           ? clusterExclude
           : new Set([uuid]);
 
+      // Prefer the cyan hover pair. After grid snap, free-search can pick a
+      // different tall side bank (east/west) while the user only saw the
+      // highlighted target — that steals mid-chain neighbors onto the drag.
       const endDock = timeDock(() =>
-        resolveBankDragEndDock(
-          list,
-          cluster,
-          timeLayout(() => resolveDisplayPositions(list)),
-        ),
+        resolveBankDragEndDock(list, cluster, {
+          display: timeLayout(() => resolveDisplayPositions(list)),
+          pointerC15: endPointerC15 ?? undefined,
+          preferredDock,
+        }),
       );
       if (!endDock) return;
 
@@ -2361,6 +2387,7 @@
           primary: uuid,
           target: endDock.dock.target.name,
           memberIsPrimary: endDock.memberUuid === uuid,
+          fromHover: Boolean(preferredDock),
         });
       }
     } finally {

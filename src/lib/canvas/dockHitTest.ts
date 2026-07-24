@@ -5,8 +5,9 @@ import {
   type AttachCorridorCache,
   type AttachCorridorId,
   attachCorridorsForBankCached,
+  distSqPointToRect,
   rectCenter,
-  rectOverlapArea,
+  rectOverlapAabb,
 } from './attachCorridors';
 import type { DisplayPositionMap } from './displayPosition';
 import { getDisplayPosition } from './displayPosition';
@@ -91,6 +92,12 @@ export interface DockHitTestOptions {
    * unchanged). Clear at drag end. Cluster members recompute on move.
    */
   corridorCache?: AttachCorridorCache;
+  /**
+   * Live pointer in C15 world space. When set, ranking prefers the valid
+   * corridor overlap nearest the mouse (area becomes secondary). Omit for
+   * legacy area-first ranking (tests / non-pointer callers).
+   */
+  pointerC15?: { x: number; y: number };
 }
 
 /**
@@ -147,13 +154,28 @@ export function collectSpatialDockCandidateUuids(
   return candidates;
 }
 
-type ScoredDockHit = DockHit & { area: number; distSq: number };
+type ScoredDockHit = DockHit & {
+  area: number;
+  distSq: number;
+  /** Distance² from pointer to overlap AABB; Infinity when pointer ranking off. */
+  pointerDistSq: number;
+};
 
+/**
+ * Ranking:
+ * - With pointer: nearest overlap to cursor, then larger area, then corridor centers.
+ * - Without pointer: larger area, then corridor centers (legacy).
+ */
 function isBetterScore(
-  candidate: { area: number; distSq: number },
-  best: { area: number; distSq: number } | null,
+  candidate: { area: number; distSq: number; pointerDistSq: number },
+  best: { area: number; distSq: number; pointerDistSq: number } | null,
+  usePointer: boolean,
 ): boolean {
   if (!best) return true;
+  if (usePointer) {
+    if (candidate.pointerDistSq < best.pointerDistSq) return true;
+    if (candidate.pointerDistSq > best.pointerDistSq) return false;
+  }
   return (
     candidate.area > best.area ||
     (candidate.area === best.area && candidate.distSq < best.distSq)
@@ -169,6 +191,8 @@ function findDockTargetForDraggedBankScored(
   const draggedUuid = options.excludeUuid ?? draggedBank.uuid;
   const draggedOrigin = getDisplayPosition(draggedBank, displayByUuid);
   const cache = options.corridorCache;
+  const pointer = options.pointerC15;
+  const usePointer = pointer != null;
   const draggedCorridors = attachCorridorsForBankCached(
     cache,
     draggedBank,
@@ -196,7 +220,10 @@ function findDockTargetForDraggedBankScored(
     for (const pair of COMPLEMENTARY_PAIRS) {
       const a = draggedCorridors[pair.dragged];
       const b = targetCorridors[pair.target];
-      const area = rectOverlapArea(a, b);
+      // Prefer AABB helper so area and pointer distance share one overlap rect.
+      const overlap = rectOverlapAabb(a, b);
+      if (!overlap) continue;
+      const area = overlap.width * overlap.height;
       if (area <= 0) continue;
 
       const ca = rectCenter(a);
@@ -204,8 +231,13 @@ function findDockTargetForDraggedBankScored(
       const dx = ca.x - cb.x;
       const dy = ca.y - cb.y;
       const distSq = dx * dx + dy * dy;
+      const pointerDistSq = usePointer
+        ? distSqPointToRect(pointer.x, pointer.y, overlap)
+        : Number.POSITIVE_INFINITY;
 
-      if (!isBetterScore({ area, distSq }, best)) continue;
+      if (!isBetterScore({ area, distSq, pointerDistSq }, best, usePointer)) {
+        continue;
+      }
 
       best = {
         target,
@@ -214,6 +246,7 @@ function findDockTargetForDraggedBankScored(
         draggedHighlightEdge: pair.draggedHighlightEdge,
         area,
         distSq,
+        pointerDistSq,
       };
     }
   }
@@ -262,6 +295,7 @@ export function findDockTargetForDragCluster(
   const excludeCluster = options.excludeClusterUuids ?? members;
   const byUuid = new Map(banks.map((b) => [b.uuid, b]));
 
+  const usePointer = options.pointerC15 != null;
   let best: (ScoredDockHit & { memberUuid: string }) | null = null;
 
   for (const memberUuid of members) {
@@ -279,7 +313,7 @@ export function findDockTargetForDragCluster(
       },
     );
     if (!scored) continue;
-    if (!isBetterScore(scored, best)) continue;
+    if (!isBetterScore(scored, best, usePointer)) continue;
 
     best = { ...scored, memberUuid };
   }
@@ -289,5 +323,67 @@ export function findDockTargetForDragCluster(
   return {
     ...toDockHit(best),
     memberUuid: best.memberUuid,
+  };
+}
+
+/** Cyan hover pair captured during drag — preferred commit on release. */
+export type PreferredDockSpec = {
+  memberUuid: string;
+  targetUuid: string;
+  dockEdge: DockEdge;
+};
+
+/**
+ * Re-validate a live hover dock after the store move / grid snap.
+ * Returns that same pair if complementary corridors still overlap; otherwise
+ * null. Does **not** search for a different target — release must match the
+ * cyan highlight the user saw (WYSIWYG). No hover → caller may free-search.
+ */
+export function validatePreferredDockHit(
+  banks: readonly Bank[],
+  clusterUuids: ReadonlySet<string>,
+  displayByUuid: DisplayPositionMap,
+  preferred: PreferredDockSpec,
+  options: Pick<DockHitTestOptions, 'corridorCache'> = {},
+): ClusterDockHit | null {
+  if (!clusterUuids.has(preferred.memberUuid)) return null;
+  if (clusterUuids.has(preferred.targetUuid)) return null;
+
+  const byUuid = new Map(banks.map((b) => [b.uuid, b]));
+  const member = byUuid.get(preferred.memberUuid);
+  const target = byUuid.get(preferred.targetUuid);
+  if (!member || !target) return null;
+
+  const pair = COMPLEMENTARY_PAIRS.find((p) => p.dockEdge === preferred.dockEdge);
+  if (!pair) return null;
+
+  const cache = options.corridorCache;
+  const memberOrigin = getDisplayPosition(member, displayByUuid);
+  const targetOrigin = getDisplayPosition(target, displayByUuid);
+  const memberCorridors = attachCorridorsForBankCached(
+    cache,
+    member,
+    memberOrigin.x,
+    memberOrigin.y,
+  );
+  const targetCorridors = attachCorridorsForBankCached(
+    cache,
+    target,
+    targetOrigin.x,
+    targetOrigin.y,
+  );
+
+  const overlap = rectOverlapAabb(
+    memberCorridors[pair.dragged],
+    targetCorridors[pair.target],
+  );
+  if (!overlap) return null;
+
+  return {
+    target,
+    dockEdge: pair.dockEdge,
+    highlightEdge: highlightEdgeForDockEdge(pair.dockEdge),
+    draggedHighlightEdge: pair.draggedHighlightEdge,
+    memberUuid: preferred.memberUuid,
   };
 }
