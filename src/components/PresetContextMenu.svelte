@@ -1,7 +1,14 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import { presetColorFromName } from '../lib/canvas/presetColors';
-  import { banks, setPresetColor, setPresetComment, startRenamePreset } from '../lib/model/bankStore';
+  import {
+    banks,
+    setPresetColor,
+    setPresetComment,
+    sortPresetsInBankStore,
+    startRenamePreset,
+    type PresetSortBy,
+  } from '../lib/model/bankStore';
   import { portalBody } from '../lib/ui/portalBody';
   import { uiScale } from '../lib/ui/uiScale';
   import { PRESET_COLOR_NAMES, type PresetColorName } from '../lib/xml/presetAttributes';
@@ -29,11 +36,16 @@
   let menuEl: HTMLDivElement | undefined = $state();
   let commentInput: HTMLTextAreaElement | undefined = $state();
   let showColorMenu = $state(false);
+  let showSortMenu = $state(false);
   let showCommentDialog = $state(false);
   let commentDraft = $state('');
 
   const count = $derived(presetUuids.length);
   const canRename = $derived(count === 1);
+  const bankPresetCount = $derived(
+    $banks.find((b) => b.uuid === bankUuid)?.presetOrder.length ?? 0,
+  );
+  const canSort = $derived(bankPresetCount >= 2);
 
   /** Cursor-anchored popups must not use `.app-ui { zoom }` — it offsets fixed coords. */
   function placeMenuAtCursor(): void {
@@ -78,6 +90,12 @@
 
   function handleColor(color: PresetColorName): void {
     setPresetColor(bankUuid, presetUuids, color);
+    onclose?.();
+  }
+
+  function handleSort(sortBy: PresetSortBy): void {
+    if (!canSort) return;
+    sortPresetsInBankStore(bankUuid, sortBy);
     onclose?.();
   }
 
@@ -179,10 +197,12 @@
     Rename
   </button>
 
+  <!-- Flyouts flush to parent (no ml gap) so mouseleave does not dismiss mid-travel -->
   <div
     class="relative"
     onmouseenter={() => {
       showColorMenu = true;
+      showSortMenu = false;
     }}
     onmouseleave={() => {
       showColorMenu = false;
@@ -197,7 +217,7 @@
     </button>
     {#if showColorMenu}
       <div
-        class="absolute left-full top-0 ml-0.5 min-w-[120px] rounded border border-c15-border bg-c15-surface-raised py-1 shadow-lg"
+        class="absolute left-full top-0 min-w-[120px] rounded border border-c15-border bg-c15-surface-raised py-1 shadow-lg"
       >
         {#each PRESET_COLOR_NAMES as color (color)}
           {@const rgb = presetColorFromName(color)}
@@ -213,6 +233,49 @@
             {color === 'none' ? 'None' : color.charAt(0).toUpperCase() + color.slice(1)}
           </button>
         {/each}
+      </div>
+    {/if}
+  </div>
+
+  <div
+    class="relative"
+    onmouseenter={() => {
+      showSortMenu = true;
+      showColorMenu = false;
+    }}
+    onmouseleave={() => {
+      showSortMenu = false;
+    }}
+  >
+    <button
+      type="button"
+      class="flex w-full items-center justify-between px-3 py-1.5 text-left text-xs text-c15-text transition-colors hover:bg-c15-surface hover:text-c15-accent
+        {!canSort ? 'cursor-not-allowed opacity-40' : ''}"
+      disabled={!canSort}
+    >
+      Sort by
+      <span class="text-c15-text-muted">▸</span>
+    </button>
+    {#if showSortMenu && canSort}
+      <div
+        class="absolute left-full top-0 min-w-[140px] rounded border border-c15-border bg-c15-surface-raised py-1 shadow-lg"
+      >
+        <button
+          type="button"
+          class="w-full px-3 py-1.5 text-left text-xs text-c15-text hover:bg-c15-surface"
+          onclick={() => handleSort('name')}
+          title="Sort by preset name (A→Z; click again for Z→A)"
+        >
+          Name
+        </button>
+        <button
+          type="button"
+          class="w-full px-3 py-1.5 text-left text-xs text-c15-text hover:bg-c15-surface"
+          onclick={() => handleSort('storeTime')}
+          title="Sort by StoreTime creation date (oldest→newest; click again for newest→oldest)"
+        >
+          Creation date
+        </button>
       </div>
     {/if}
   </div>

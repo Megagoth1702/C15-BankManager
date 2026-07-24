@@ -46,22 +46,41 @@ function presetByUuid(bank: Bank, uuid: string) {
   return bank.presets.find((preset) => preset.uuid.toLowerCase() === needle);
 }
 
+/**
+ * C15 load fills bank slots by `<preset pos="N">` (see PresetBankSerializer).
+ * After reorder/sort, `preset-order` alone is not enough — pos must match the
+ * new slot index or the hardware restores the old content order.
+ */
+export function rewritePresetPos(rawXml: string, pos: number): string {
+  if (/<preset\s+pos="\d+"/.test(rawXml)) {
+    return rawXml.replace(/<preset\s+pos="\d+"/, `<preset pos="${pos}"`);
+  }
+  if (/<preset\b/.test(rawXml)) {
+    return rawXml.replace(/<preset\b/, `<preset pos="${pos}"`);
+  }
+  return rawXml;
+}
+
 function serializePresetBlocks(bank: Bank): string[] {
   const lines: string[] = [];
   const emitted = new Set<string>();
 
-  for (const uuid of bank.presetOrder) {
+  bank.presetOrder.forEach((uuid, index) => {
     const preset = presetByUuid(bank, uuid);
-    if (!preset?.rawXml) continue;
+    if (!preset?.rawXml) return;
     emitted.add(preset.uuid.toLowerCase());
-    for (const line of preset.rawXml.split(/\r?\n/)) {
+    // Always renumber pos to match preset-order index (C15 + lossless re-import).
+    const rawXml = rewritePresetPos(preset.rawXml, index);
+    for (const line of rawXml.split(/\r?\n/)) {
       lines.push(line);
     }
-  }
+  });
 
+  let orphanPos = bank.presetOrder.length;
   for (const preset of bank.presets) {
     if (emitted.has(preset.uuid.toLowerCase()) || !preset.rawXml) continue;
-    for (const line of preset.rawXml.split(/\r?\n/)) {
+    const rawXml = rewritePresetPos(preset.rawXml, orphanPos++);
+    for (const line of rawXml.split(/\r?\n/)) {
       lines.push(line);
     }
   }

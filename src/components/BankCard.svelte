@@ -61,6 +61,8 @@
       presetUuid: string,
       event: MouseEvent,
     ) => void;
+    /** Bank header right-click (export menu); Canvas owns selection resolve. */
+    onbankcontextmenu?: (bankUuid: string, event: MouseEvent) => void;
     /**
      * Bank drag/select gesture start — Canvas tracks move/up on window.
      * Do not use setPointerCapture here — Canvas captures on the stable root.
@@ -92,6 +94,7 @@
     reduceSelectionGlow = false,
     onpresetpointerdown,
     onpresetcontextmenu,
+    onbankcontextmenu,
     onbankpointerdown,
   }: Props = $props();
 
@@ -303,6 +306,12 @@
     onpresetcontextmenu?.(bank.uuid, uuid, event);
   }
 
+  function onHeaderContextMenu(event: MouseEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
+    onbankcontextmenu?.(bank.uuid, event);
+  }
+
   function commitBankRename(): void {
     if (!isRenamingBank) return;
     if (bankRenameDraft.trim() === bank.name) {
@@ -455,6 +464,7 @@
       style:background-color="{headerBg}"
       data-bank-header-drop={bank.uuid}
       onpointerdown={onHeaderPointerDown}
+      oncontextmenu={onHeaderContextMenu}
     >
       {#if isRenamingBank}
         <input
@@ -526,6 +536,17 @@
             title={label || `Slot ${slotIndex + 1}`}
             onpointerdown={(e) => onPresetPointerDown(uuid, e)}
             oncontextmenu={(e) => onPresetContextMenu(uuid, e)}
+            onpointerenter={
+              comment && !isRenamingPreset
+                ? (e) => showPresetCommentTooltip(comment, e)
+                : undefined
+            }
+            onpointermove={
+              comment && !isRenamingPreset ? movePresetCommentTooltip : undefined
+            }
+            onpointerleave={
+              comment && !isRenamingPreset ? hidePresetCommentTooltip : undefined
+            }
           >
             {#if tagColor}
               <span
@@ -574,24 +595,19 @@
               </span>
             {/if}
             {#if comment && !isRenamingPreset}
-              <button
-                type="button"
-                tabindex="-1"
+              <!-- Visual marker only; hover target is the full preset row. -->
+              <span
                 data-preset-comment="true"
-                class="absolute z-[50] flex cursor-default items-center justify-center font-bold leading-none text-yellow-400"
+                class="pointer-events-none absolute z-[50] flex items-center justify-center font-bold leading-none text-yellow-400"
                 style:right="{1 * scale}px"
                 style:top="0"
                 style:width="{12 * scale}px"
                 style:height="{rowPx}px"
                 style:font-size="{10 * scale}px"
-                title="Comment"
-                onpointerenter={(e) => showPresetCommentTooltip(comment, e)}
-                onpointermove={movePresetCommentTooltip}
-                onpointerleave={hidePresetCommentTooltip}
-                onpointerdown={(e) => e.stopPropagation()}
+                aria-hidden="true"
               >
                 C
-              </button>
+              </span>
             {/if}
           </div>
         {/each}

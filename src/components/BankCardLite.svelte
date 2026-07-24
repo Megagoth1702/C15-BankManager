@@ -43,6 +43,8 @@
       originY: number;
       pointerId: number;
     }) => void;
+    /** Bank header right-click (export menu); Canvas owns selection resolve. */
+    onbankcontextmenu?: (bankUuid: string, event: MouseEvent) => void;
   }
 
   let {
@@ -59,6 +61,7 @@
     dragging = false,
     reduceSelectionGlow = false,
     onbankpointerdown,
+    onbankcontextmenu,
   }: Props = $props();
 
   const scale = C15_SCALE;
@@ -144,6 +147,12 @@
       pointerId: event.pointerId,
     });
   }
+
+  function onHeaderContextMenu(event: MouseEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
+    onbankcontextmenu?.(bank.uuid, event);
+  }
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -194,11 +203,14 @@
     onpointerleave={hideNameTooltip}
     onpointerdown={onDragSurfacePointerDown}
   >
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       class="shrink-0 border-b border-black/20"
       style:height="{headerPx}px"
       style:min-height="{headerPx}px"
       style:background-color="{headerBg}"
+      data-bank-header-drop={bank.uuid}
+      oncontextmenu={onHeaderContextMenu}
     ></div>
     <div
       class="bg-c15-preset-row"

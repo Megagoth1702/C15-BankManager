@@ -57,6 +57,8 @@ import {
   duplicatePresetsInBank,
   movePresetsBetweenBanks,
   reorderPresetsInBank,
+  sortPresetsInBank,
+  type PresetSortBy,
 } from './presetMove';
 import {
   attachmentCrossesMoveSet,
@@ -132,6 +134,7 @@ export {
   cancelRenameBank,
   startRenamePreset,
   cancelRenamePreset,
+  resolveBankContextMenuSelection,
 } from './selectionCommands';
 
 export {
@@ -315,13 +318,42 @@ export function reorderPresetsInBankStore(
     list,
     reorderPresetsInBank(list, bankUuid, presetUuids, insertIndex),
     [bankUuid],
-    false,
+    true, // pos + rawXml rewritten to match new order (C15 export)
     bankUuid,
     insertIndex,
     'reorder',
     'Reorder presets',
   );
 }
+
+/** Sort all presets in a bank by name or creation/store time (context menu). */
+export function sortPresetsInBankStore(
+  bankUuid: string,
+  sortBy: PresetSortBy,
+): boolean {
+  const list = getBanksSnapshot();
+  const result = sortPresetsInBank(list, bankUuid, sortBy);
+  if (!result.ok || !result.banks) {
+    if (result.error) setStoreError(result.error);
+    return false;
+  }
+  if (result.banks === list) return true;
+
+  // Order + pos/rawXml rewrite (and StoreTime refresh for date sort) — capture full preset content.
+  const bank = findByUuid(list, bankUuid);
+  const before = captureBankContent(list, bank ? [bank.uuid] : [bankUuid], true);
+  const after = captureBankContent(result.banks, bank ? [bank.uuid] : [bankUuid], true);
+  commitBanks(result.banks);
+  recordPresetContentChange(
+    sortBy === 'name' ? 'Sort presets by name' : 'Sort presets by creation date',
+    before,
+    after,
+  );
+  log('store', 'sortPresetsInBank', { bankUuid, sortBy, count: result.moved.length });
+  return true;
+}
+
+export type { PresetSortBy };
 
 function defaultNewBankPosition(
   list: Bank[],

@@ -13,6 +13,11 @@
     canExportAll?: boolean;
     /** Count of selected banks; 0 hides selected-export items. */
     selectedCount?: number;
+    /**
+     * Empty-canvas menu includes Create new bank; bank-header menu is export-only.
+     * Default true for empty canvas.
+     */
+    showCreateBank?: boolean;
     oncreatebank?: () => void;
     onexportall?: () => void;
     onexportselected?: () => void;
@@ -25,6 +30,7 @@
     clientY,
     canExportAll = false,
     selectedCount = 0,
+    showCreateBank = true,
     oncreatebank,
     onexportall,
     onexportselected,
@@ -73,6 +79,7 @@
     $uiScale;
     canExportAll;
     selectedCount;
+    showCreateBank;
     placeMenuAtCursor();
   });
 
@@ -109,16 +116,20 @@
   class="fixed z-[110] min-w-[240px] rounded border border-c15-border bg-c15-surface-raised py-1 shadow-lg"
   onclick={(e) => e.stopPropagation()}
 >
-  <button
-    type="button"
-    class="w-full px-3 py-1.5 text-left text-xs text-c15-text transition-colors hover:bg-c15-surface hover:text-c15-accent"
-    onclick={handleCreateBank}
-  >
-    Create new bank
-  </button>
+  {#if showCreateBank}
+    <button
+      type="button"
+      class="w-full px-3 py-1.5 text-left text-xs text-c15-text transition-colors hover:bg-c15-surface hover:text-c15-accent"
+      onclick={handleCreateBank}
+    >
+      Create new bank
+    </button>
+  {/if}
 
   {#if showExportSection}
-    <div class="my-1 border-t border-c15-border/60" role="separator"></div>
+    {#if showCreateBank}
+      <div class="my-1 border-t border-c15-border/60" role="separator"></div>
+    {/if}
     {#if canExportAll}
       <button
         type="button"

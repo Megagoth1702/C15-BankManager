@@ -1,4 +1,7 @@
 import type { Bank, Preset } from '../types/bank';
+import { findByUuid } from '../uuid/uuidKey';
+import { getPresetAttributes } from '../xml/presetAttributes';
+import { rewritePresetPos } from '../xml/serialize';
 import { freshC15Uuid } from '../uuid/c15Uuid';
 
 export interface MovePresetsResult {
@@ -16,6 +19,34 @@ function allPresetUuidNeedles(banks: readonly Bank[]): Set<string> {
     }
   }
   return used;
+}
+
+/**
+ * Align each preset's `pos` + rawXml `pos="N"` with `presetOrder` indices.
+ * Required for C15 export: load places content by pos into preset-order slots.
+ */
+export function syncPresetPositionsToOrder(
+  presets: readonly Preset[],
+  presetOrder: readonly string[],
+): Preset[] {
+  const indexByUuid = new Map<string, number>();
+  presetOrder.forEach((uuid, i) => {
+    indexByUuid.set(uuid.toLowerCase(), i);
+  });
+
+  let nextOrphan = presetOrder.length;
+  return presets.map((preset) => {
+    const fromOrder = indexByUuid.get(preset.uuid.toLowerCase());
+    const pos = fromOrder !== undefined ? fromOrder : nextOrphan++;
+    if (preset.pos === pos && preset.rawXml.includes(`pos="${pos}"`)) {
+      return preset;
+    }
+    return {
+      ...preset,
+      pos,
+      rawXml: rewritePresetPos(preset.rawXml, pos),
+    };
+  });
 }
 
 function freshPresetUuid(used: Set<string>): string {
@@ -222,18 +253,162 @@ export function reorderPresetsInBank(
 
   const nextSelected = moving[moving.length - 1] ?? bank.selectedPreset;
   const now = Math.floor(Date.now() / 1000);
+  const nextPresets = syncPresetPositionsToOrder(bank.presets, nextOrder);
 
   const updated = banks.map((b) => {
     if (b.uuid !== bankUuid) return b;
     return {
       ...b,
       presetOrder: nextOrder,
+      presets: nextPresets,
       selectedPreset: nextSelected,
       lastChangedTimestamp: now,
     };
   });
 
   return { ok: true, moved: moving, banks: updated };
+}
+
+/** Criteria for sorting a bank's `preset-order`. */
+export type PresetSortBy = 'name' | 'storeTime';
+
+function presetLookup(bank: Bank): Map<string, Preset> {
+  const map = new Map<string, Preset>();
+  for (const preset of bank.presets) {
+    map.set(preset.uuid.toLowerCase(), preset);
+  }
+  return map;
+}
+
+/**
+ * Resolve C15 creation/store time from the preset field or rawXml
+ * `<attribute name="StoreTime">…</attribute>` (source of truth on disk).
+ */
+export function resolvePresetStoreTime(preset: Preset): string {
+  const fromField = (preset.storeTime ?? '').trim();
+  if (fromField && fromField !== '0') return fromField;
+  const fromXml = getPresetAttributes(preset.rawXml).storeTime.trim();
+  if (fromXml && fromXml !== '0') return fromXml;
+  return fromField || fromXml || '';
+}
+
+/**
+ * Numeric sort key for StoreTime (ISO-8601 preferred).
+ * Missing / "0" times sort after real timestamps (for ascending order).
+ */
+export function storeTimeSortValue(storeTime: string): number {
+  const raw = storeTime.trim();
+  if (!raw || raw === '0') return Number.POSITIVE_INFINITY;
+  const ms = Date.parse(raw);
+  if (Number.isFinite(ms)) return ms;
+  // Non-ISO fallback: stable string rank via char codes is not needed — use 0 + string tiebreak later
+  return Number.NaN;
+}
+
+function compareStoreTimes(a: string, b: string): number {
+  const va = storeTimeSortValue(a);
+  const vb = storeTimeSortValue(b);
+  const aMissing = !Number.isFinite(va);
+  const bMissing = !Number.isFinite(vb);
+  if (aMissing && bMissing) return a.localeCompare(b);
+  if (aMissing) return 1;
+  if (bMissing) return -1;
+  if (va !== vb) return va - vb;
+  return a.localeCompare(b);
+}
+
+function ordersEqual(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((u, i) => u === b[i]);
+}
+
+/**
+ * Sort all presets in one bank by name (A→Z) or creation/store time (oldest→newest).
+ * Uses C15 `StoreTime` attributes. If the bank is already in that order, reverses
+ * (Z→A / newest→oldest) so the action always produces a visible reorder when keys differ.
+ * Stable on ties. UUIDs and selection are preserved.
+ */
+export function sortPresetsInBank(
+  banks: Bank[],
+  bankUuid: string,
+  sortBy: PresetSortBy,
+): MovePresetsResult {
+  const bank = findByUuid(banks, bankUuid);
+  if (!bank) {
+    return { ok: false, moved: [], error: 'Bank not found.' };
+  }
+  if (bank.presetOrder.length < 2) {
+    return { ok: true, moved: [...bank.presetOrder], banks };
+  }
+
+  const byUuid = presetLookup(bank);
+  const orderIndex = new Map<string, number>();
+  bank.presetOrder.forEach((uuid, i) => {
+    orderIndex.set(uuid.toLowerCase(), i);
+  });
+
+  // Cache resolved StoreTime so we don't re-parse rawXml per comparison.
+  const storeTimeByUuid = new Map<string, string>();
+  if (sortBy === 'storeTime') {
+    for (const preset of bank.presets) {
+      storeTimeByUuid.set(preset.uuid.toLowerCase(), resolvePresetStoreTime(preset));
+    }
+  }
+
+  const ascending = [...bank.presetOrder].sort((a, b) => {
+    const pa = byUuid.get(a.toLowerCase());
+    const pb = byUuid.get(b.toLowerCase());
+    if (!pa || !pb) {
+      return (orderIndex.get(a.toLowerCase()) ?? 0) - (orderIndex.get(b.toLowerCase()) ?? 0);
+    }
+
+    let cmp = 0;
+    if (sortBy === 'name') {
+      cmp = pa.name.localeCompare(pb.name, undefined, {
+        numeric: true,
+        sensitivity: 'base',
+      });
+    } else {
+      const ta = storeTimeByUuid.get(a.toLowerCase()) ?? '';
+      const tb = storeTimeByUuid.get(b.toLowerCase()) ?? '';
+      cmp = compareStoreTimes(ta, tb);
+    }
+    if (cmp !== 0) return cmp;
+    return (orderIndex.get(a.toLowerCase()) ?? 0) - (orderIndex.get(b.toLowerCase()) ?? 0);
+  });
+
+  // Already ascending → reverse so a second click (or already-sorted bank) still reorders.
+  const nextOrder = ordersEqual(ascending, bank.presetOrder)
+    ? [...ascending].reverse()
+    : ascending;
+
+  if (ordersEqual(nextOrder, bank.presetOrder)) {
+    return { ok: true, moved: [...nextOrder], banks };
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  // Keep StoreTime field in sync; always rewrite pos to match new order (C15 export).
+  const withStoreTime =
+    sortBy === 'storeTime'
+      ? bank.presets.map((preset) => {
+          const resolved = storeTimeByUuid.get(preset.uuid.toLowerCase()) ?? '';
+          return resolved && resolved !== preset.storeTime
+            ? { ...preset, storeTime: resolved }
+            : preset;
+        })
+      : bank.presets;
+  const nextPresets = syncPresetPositionsToOrder(withStoreTime, nextOrder);
+
+  const updated = banks.map((b) => {
+    if (b.uuid.toLowerCase() !== bank.uuid.toLowerCase()) return b;
+    return {
+      ...b,
+      presetOrder: nextOrder,
+      presets: nextPresets,
+      lastChangedTimestamp: now,
+    };
+  });
+
+  return { ok: true, moved: [...nextOrder], banks: updated };
 }
 
 /**

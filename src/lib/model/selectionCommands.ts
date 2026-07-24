@@ -20,6 +20,19 @@ import { uuidEquals } from '../uuid/uuidKey';
 
 export type SelectMode = 'replace' | 'toggle' | 'add';
 
+/**
+ * Bank header context-menu selection (mirrors preset context menu):
+ * if the bank is already selected, keep the full multi-selection;
+ * otherwise select only the clicked bank.
+ */
+export function resolveBankContextMenuSelection(
+  bankUuid: string,
+  selectedBankUuids: readonly string[],
+): { shouldSelectClicked: boolean } {
+  const alreadySelected = selectedBankUuids.some((u) => uuidEquals(u, bankUuid));
+  return { shouldSelectClicked: !alreadySelected };
+}
+
 /** Preset focus always clears bank multi-select so both cannot stay active. */
 function withPresetFocus<
   T extends {

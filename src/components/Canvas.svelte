@@ -104,6 +104,7 @@
     selectBanks,
     selectPreset,
     selectPresetsBatch,
+    resolveBankContextMenuSelection,
     userPositionedUuids,
   } from '../lib/model/bankStore';
   import {
@@ -299,12 +300,16 @@
     presetUuids: string[];
   } | null>(null);
 
-  /** Empty-canvas right-click menu (create bank at click point). */
+  /**
+   * Canvas right-click menu: empty canvas (create + export) or bank header (export only).
+   * `c15X`/`c15Y` only used when placing a new bank from empty canvas.
+   */
   let canvasContextMenu = $state<{
     clientX: number;
     clientY: number;
     c15X: number;
     c15Y: number;
+    showCreateBank: boolean;
   } | null>(null);
 
   const marqueeScreenRect = $derived.by(() => {
@@ -1298,8 +1303,36 @@
       clientY: event.clientY,
       c15X: c15.x,
       c15Y: c15.y,
+      showCreateBank: true,
     };
     log('canvas', 'context menu', { c15X: c15.x, c15Y: c15.y });
+  }
+
+  function handleBankContextMenu(bankUuid: string, event: MouseEvent): void {
+    closePresetContextMenu();
+    const meta = get(bankMeta);
+    const { shouldSelectClicked } = resolveBankContextMenuSelection(
+      bankUuid,
+      meta.selectedBankUuids,
+    );
+    if (shouldSelectClicked) {
+      selectBank(bankUuid, 'replace');
+    }
+    updatePointerPosition(event.clientX, event.clientY);
+    canvasContextMenu = {
+      clientX: event.clientX,
+      clientY: event.clientY,
+      c15X: 0,
+      c15Y: 0,
+      showCreateBank: false,
+    };
+    log('canvas', 'bank header context menu', {
+      bankUuid,
+      selectedCount: shouldSelectClicked
+        ? 1
+        : meta.selectedBankUuids.length,
+      selectedClicked: shouldSelectClicked,
+    });
   }
 
   function handleCreateBankFromContextMenu(): void {
@@ -2418,6 +2451,7 @@
             reduceSelectionGlow={bankDragActive}
             onbankpointerdown={(info) =>
               handleBankGestureStart(bank.uuid, info)}
+            onbankcontextmenu={handleBankContextMenu}
           />
         {:else}
           <BankCard
@@ -2443,6 +2477,7 @@
             onpresetpointerdown={handlePresetPointerDown}
             onpresetcontextmenu={handlePresetContextMenu}
             onbankpointerdown={(info) => handleBankGestureStart(bank.uuid, info)}
+            onbankcontextmenu={handleBankContextMenu}
           />
         {/if}
       {/each}
@@ -2474,6 +2509,7 @@
       clientY={canvasContextMenu.clientY}
       canExportAll={$banks.length > 0 && !$bankMeta.loading}
       selectedCount={$bankMeta.selectedBankUuids.length}
+      showCreateBank={canvasContextMenu.showCreateBank}
       oncreatebank={handleCreateBankFromContextMenu}
       onexportall={handleExportAllFromContextMenu}
       onexportselected={handleExportSelectedFromContextMenu}
