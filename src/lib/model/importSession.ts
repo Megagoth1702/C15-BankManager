@@ -24,7 +24,8 @@ import {
   getCanvasScreenSize,
   positionBanksAtViewportCenter,
 } from '../canvas/pointerPosition';
-import { viewport } from '../canvas/viewport.svelte';
+import { fitBanksToView, viewport } from '../canvas/viewport.svelte';
+import { isFolderParentBank } from '../layout/smartLayout';
 import type { Bank, PresetManagerDoc } from '../types/bank';
 import { parseFileBytes } from '../xml/parse';
 import {
@@ -43,9 +44,43 @@ import {
   countAttachedBanks,
   healAttachedPositionsOnImport,
 } from './positioning';
+import { selectBank } from './selectionCommands';
 import { clearSessionDirty, markSessionDirty } from './sessionDirty';
 import { setShowSynthZone } from './settingsCommands';
 import { clearHistory } from './undoHistory';
+
+/**
+ * After mass import: frame the newly imported banks and select the folder-root bank.
+ * Multiple roots → top-left-most folder parent (layout pack order).
+ */
+function focusMassImportResult(importedBanks: Bank[]): void {
+  if (importedBanks.length === 0) return;
+
+  const size = getCanvasScreenSize();
+  if (size && size.width > 0 && size.height > 0) {
+    fitBanksToView(importedBanks, size.width, size.height);
+    log('import', 'fitImportedBanks', {
+      count: importedBanks.length,
+      zoom: viewport.zoom,
+      panX: viewport.panX,
+      panY: viewport.panY,
+      canvas: size,
+    });
+  }
+
+  const roots = importedBanks.filter(isFolderParentBank);
+  const pickFrom = roots.length > 0 ? roots : importedBanks;
+  const primary = [...pickFrom].sort((a, b) => a.y - b.y || a.x - b.x)[0];
+  if (primary) {
+    selectBank(primary.uuid, 'replace', 'canvas');
+    log('import', 'selectImportRoot', {
+      uuid: primary.uuid,
+      name: primary.name,
+      isFolderParent: isFolderParentBank(primary),
+      rootCount: roots.length,
+    });
+  }
+}
 
 function applyImportHealing(bankList: Bank[]): Bank[] {
   logPositionSnapshot('import', 'positions before heal (raw from XML)', bankList);
@@ -289,6 +324,12 @@ export async function executeMassImport(
             ? `Imported ${result.succeeded} of ${files.length} files. Failed: ${result.errors.join('; ')}`
             : null,
     }));
+
+    // Frame new content + select folder root (e.g. "(root)" for flat multi-file).
+    // Runs after banks are in the store so selection/reveal targets valid uuids.
+    if (result.succeeded > 0 && importedBanks.length > 0) {
+      focusMassImportResult(importedBanks);
+    }
 
     log('import', 'massImport finished', {
       bankCount: finalBanks.length,

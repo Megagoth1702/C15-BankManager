@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import { presetColorFromName } from '../lib/canvas/presetColors';
   import { focusRenameInput } from '../lib/ui/focusRenameInput';
   import {
@@ -26,6 +27,7 @@
   }: Props = $props();
 
   let presetRenameDraft = $state('');
+  let listScrollEl: HTMLDivElement | undefined = $state();
 
   const renamingEntry = $derived.by(() => {
     const target = $bankMeta.renamingPreset;
@@ -39,6 +41,42 @@
   $effect(() => {
     if (!renamingEntry) return;
     presetRenameDraft = renamingEntry.name;
+  });
+
+  /** Canvas selection → keep the matching browse row in view (mirror of focusPreset). */
+  $effect(() => {
+    const revealUuid = $bankMeta.revealSidebarPresetUuid;
+    if (!revealUuid) return;
+    const needle = revealUuid.toLowerCase();
+    // Depend on entries so we retry after filter/index rebuild or tab mount.
+    void entries;
+    void tick().then(() => {
+      const root = listScrollEl;
+      if (!root) {
+        bankMeta.update((m) =>
+          m.revealSidebarPresetUuid === revealUuid
+            ? { ...m, revealSidebarPresetUuid: null }
+            : m,
+        );
+        return;
+      }
+      const row = root.querySelector<HTMLElement>(
+        `[data-sidebar-preset-uuid="${CSS.escape(revealUuid)}"]`,
+      );
+      // Case-insensitive fallback if attribute casing differs.
+      const el =
+        row ??
+        Array.from(root.querySelectorAll<HTMLElement>('[data-sidebar-preset-uuid]')).find(
+          (node) =>
+            (node.getAttribute('data-sidebar-preset-uuid') ?? '').toLowerCase() === needle,
+        );
+      el?.scrollIntoView({ block: 'nearest' });
+      bankMeta.update((m) =>
+        m.revealSidebarPresetUuid === revealUuid
+          ? { ...m, revealSidebarPresetUuid: null }
+          : m,
+      );
+    });
   });
 
   function isSelected(entry: PresetSearchEntry): boolean {
@@ -101,7 +139,10 @@
 </script>
 
 <div class="relative flex min-h-0 min-w-0 flex-1 flex-col">
-  <div class="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+  <div
+    class="min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
+    bind:this={listScrollEl}
+  >
     {#if entries.length === 0}
       <div class="px-3 py-4 text-center text-xs text-c15-text-muted">No presets match filters</div>
     {:else}
@@ -111,7 +152,7 @@
           {@const selected = isSelected(entry)}
           {@const renaming = isRenaming(entry)}
           {@const showCommentMark = entryHasComment(entry)}
-          <li>
+          <li data-sidebar-preset-uuid={entry.presetUuid}>
             {#if renaming}
               <div class="flex items-stretch border-b border-c15-border/40 px-1 py-0.5">
                 <span

@@ -108,7 +108,10 @@ export function buildDeviatedUuidSet(
 function attachmentDepth(bank: Bank, byUuid: Map<string, Bank>): number {
   let depth = 0;
   let current: Bank | undefined = bank;
+  const visited = new Set<string>();
   while (current?.attachedToUuid) {
+    if (visited.has(current.uuid)) break;
+    visited.add(current.uuid);
     const parent = byUuid.get(current.attachedToUuid);
     if (!parent) break;
     depth++;
@@ -317,12 +320,18 @@ export function banksShareAttachmentCluster(
 
   const byUuid = buildBankMap(bankList);
   let current = byUuid.get(aUuid);
+  const visitedA = new Set<string>();
   while (current?.attachedToUuid) {
+    if (visitedA.has(current.uuid)) break;
+    visitedA.add(current.uuid);
     if (current.attachedToUuid === bUuid) return true;
     current = byUuid.get(current.attachedToUuid);
   }
   current = byUuid.get(bUuid);
+  const visitedB = new Set<string>();
   while (current?.attachedToUuid) {
+    if (visitedB.has(current.uuid)) break;
+    visitedB.add(current.uuid);
     if (current.attachedToUuid === aUuid) return true;
     current = byUuid.get(current.attachedToUuid);
   }

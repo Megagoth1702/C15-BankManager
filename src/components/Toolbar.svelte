@@ -22,7 +22,6 @@
     exportSelectedBanksAsXmlLabel,
     exportSelectedBanksLabel,
     importFile,
-    importFolderFilesLegacy,
     realignAttachedBanks,
     redo,
     setShowDebugShapes,
@@ -85,15 +84,14 @@
 
   async function beginMassImportFlow(files: ImportableFile[]): Promise<void> {
     if (files.length === 0) {
-      bankMeta.update((m) => ({ ...m, error: 'No .xml or .nlbackup files found in folder' }));
+      bankMeta.update((m) => ({
+        ...m,
+        error: 'No .xml or .nlbackup files found',
+      }));
       return;
     }
 
-    if (files.length <= 3) {
-      await importFolderFilesLegacy(files);
-      return;
-    }
-
+    // Always show replace/merge dialog for multi-file and folder mass imports.
     pendingImportFiles = files;
     massImportOpen = true;
     massImportScanning = true;
@@ -129,10 +127,18 @@
 
   async function onFileSelected(event: Event): Promise<void> {
     const input = event.target as HTMLInputElement;
-    const file = input.files?.[0];
-    if (!file) return;
-    await importFile(file);
+    const list = input.files ? [...input.files] : [];
     input.value = '';
+    if (list.length === 0) return;
+
+    // One file: preserve single-file semantics (viewport-center single-bank XML, etc.).
+    // Multiple: mass-import pipeline + smart folder-chain layout (same as Import folder).
+    if (list.length === 1) {
+      await importFile(list[0]!);
+      return;
+    }
+
+    await beginMassImportFlow(toImportableFiles(list));
   }
 
   async function onFolderSelected(event: Event): Promise<void> {
@@ -387,7 +393,7 @@
       disabled={$bankMeta.loading}
       onclick={openFilePicker}
     >
-      {$bankMeta.loading ? 'Importing…' : 'Import file'}
+      {$bankMeta.loading ? 'Importing…' : 'Import files'}
     </button>
     <button
       type="button"
@@ -400,6 +406,7 @@
     <input
       bind:this={fileInput}
       type="file"
+      multiple
       accept=".nlbackup,.xml,application/gzip,application/xml,text/xml"
       class="hidden"
       onchange={onFileSelected}

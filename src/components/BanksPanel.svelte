@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import {
     bankMeta,
     banks,
@@ -27,12 +28,49 @@
 
   let renameDraft = $state('');
   let filterQuery = $state('');
+  let listScrollEl: HTMLDivElement | undefined = $state();
 
   $effect(() => {
     const renamingUuid = $bankMeta.renamingBankUuid;
     if (!renamingUuid || $bankMeta.renameSurface !== 'sidebar') return;
     const bank = $banks.find((b) => b.uuid === renamingUuid);
     if (bank) renameDraft = bank.name;
+  });
+
+  /** Canvas selection → keep the matching bank tree row in view (mirror of revealSidebarPresetUuid). */
+  $effect(() => {
+    const revealUuid = $bankMeta.revealSidebarBankUuid;
+    if (!revealUuid) return;
+    const needle = revealUuid.toLowerCase();
+    // Depend on forest + filter so we retry after tab mount / filter rebuild.
+    void treeForest;
+    void filterQuery;
+    void tick().then(() => {
+      const root = listScrollEl;
+      if (!root) {
+        bankMeta.update((m) =>
+          m.revealSidebarBankUuid === revealUuid
+            ? { ...m, revealSidebarBankUuid: null }
+            : m,
+        );
+        return;
+      }
+      const row = root.querySelector<HTMLElement>(
+        `[data-sidebar-bank-uuid="${CSS.escape(revealUuid)}"]`,
+      );
+      const el =
+        row ??
+        Array.from(root.querySelectorAll<HTMLElement>('[data-sidebar-bank-uuid]')).find(
+          (node) =>
+            (node.getAttribute('data-sidebar-bank-uuid') ?? '').toLowerCase() === needle,
+        );
+      el?.scrollIntoView({ block: 'nearest' });
+      bankMeta.update((m) =>
+        m.revealSidebarBankUuid === revealUuid
+          ? { ...m, revealSidebarBankUuid: null }
+          : m,
+      );
+    });
   });
 
   function commitRename(): void {
@@ -87,7 +125,7 @@
     </div>
   </div>
 
-  <div class="min-h-0 flex-1 overflow-y-auto">
+  <div class="min-h-0 flex-1 overflow-y-auto" bind:this={listScrollEl}>
     {#if $banks.length === 0}
       <div class="flex h-full flex-col items-center justify-center gap-3 p-4 text-center">
         <p class="text-xs text-c15-text-muted">

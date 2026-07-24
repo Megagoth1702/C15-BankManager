@@ -6,7 +6,7 @@ import type { Bank } from '../types/bank';
 import {
   bankToC15Rect,
   bboxFromBanks,
-  getGridBounds,
+  getNoGoShelfEdges,
   getSynthNoGoRect,
   LAYOUT_BANDS,
   rectExceedsMaxX,
@@ -379,15 +379,11 @@ interface GridClusterPlan {
   estimate: ClusterEstimate;
 }
 
-function estimateGridCluster(
-  entries: ImportedBankEntry[],
-  banks: Bank[],
-  gridMaxX: number,
-): ClusterEstimate {
+function estimateGridCluster(entries: ImportedBankEntry[], banks: Bank[]): ClusterEstimate {
   const chainOffset = folderParentChainOffset();
+  // Pure chain footprint without no-go distortion — used to snug clusters against the shelf.
   const { bbox } = layoutHorizontalAttachChain(banks, chainOffset, 0, {
-    maxChainX: gridMaxX,
-    wrapOnNoGo: true,
+    wrapOnNoGo: false,
   });
   if (!bbox) return { width: 0, height: 0, area: 0 };
   const width = bbox.width + chainOffset;
@@ -397,7 +393,6 @@ function estimateGridCluster(
 function planGridClusters(
   groups: FolderGroup[],
   options: FolderChainLayoutOptions,
-  gridMaxX: number,
 ): GridClusterPlan[] {
   const plans = groups.map((group) => {
     const entries = sortEntriesInFolder(group.entries, options.sortBy);
@@ -406,7 +401,7 @@ function planGridClusters(
       group,
       entries,
       banks,
-      estimate: estimateGridCluster(entries, banks, gridMaxX),
+      estimate: estimateGridCluster(entries, banks),
     };
   });
 
@@ -457,42 +452,71 @@ function candidateXsOnRow(
   clusterWidth: number,
   clusterHeight: number,
   placed: C15Rect[],
-  originX: number,
+  preferredXs: number[],
   gridMaxX: number,
+  farWestX: number,
+  westEdge: number,
 ): number[] {
-  const xs = new Set<number>();
-  const base = skipNoGoHoleX(originX, clusterWidth, rowY, clusterHeight);
-  xs.add(base);
+  const preferredOrdered: number[] = [];
+  const seen = new Set<number>();
 
-  for (const rect of placed) {
-    if (rect.y + rect.height + 30 <= rowY || rect.y >= rowY + clusterHeight + 30) continue;
-    xs.add(skipNoGoHoleX(
-      snapToGrid(rect.x + rect.width + LAYOUT_BANDS.clusterGap),
-      clusterWidth,
-      rowY,
-      clusterHeight,
-    ));
+  const pushX = (raw: number, into: number[]): void => {
+    const x = skipNoGoHoleX(raw, clusterWidth, rowY, clusterHeight);
+    if (seen.has(x)) return;
+    if (x < farWestX - LAYOUT_BANDS.synthMargin) return;
+    if (x + clusterWidth > gridMaxX + LAYOUT_BANDS.synthMargin) return;
+    seen.add(x);
+    into.push(x);
+  };
+
+  // Preferred origins first (snug west, then east) — do NOT sort leftmost-first
+  // or farWest (-6400) always wins over the compact no-go shelf.
+  for (const preferred of preferredXs) {
+    pushX(preferred, preferredOrdered);
   }
 
-  return [...xs]
-    .filter((x) => x + clusterWidth <= gridMaxX + LAYOUT_BANDS.synthMargin)
-    .sort((a, b) => a - b);
+  const neighbors: number[] = [];
+  for (const rect of placed) {
+    if (rect.y + rect.height + 30 <= rowY || rect.y >= rowY + clusterHeight + 30) continue;
+    // Right of an existing cluster (may jump east over the no-go hole).
+    pushX(snapToGrid(rect.x + rect.width + LAYOUT_BANDS.clusterGap), neighbors);
+    // Left of an existing cluster (expand the west shelf).
+    pushX(snapToGrid(rect.x - clusterWidth - LAYOUT_BANDS.clusterGap), neighbors);
+  }
+
+  // Among free neighbors, prefer snug against the west shelf (right edge near westEdge).
+  const snugTarget = snapToGrid(westEdge - clusterWidth);
+  neighbors.sort((a, b) => Math.abs(a - snugTarget) - Math.abs(b - snugTarget) || a - b);
+
+  return [...preferredOrdered, ...neighbors];
 }
 
 function trySkylinePlacement(
   plan: GridClusterPlan,
   placed: C15Rect[],
-  originX: number,
+  preferredXs: number[],
   originY: number,
   gridMaxX: number,
+  farWestX: number,
+  westEdge: number,
 ): ClusterPlacement | null {
   const { width, height } = plan.estimate;
+  const fallbackX = preferredXs[0] ?? farWestX;
   if (width <= 0 || height <= 0) {
-    return placeGridCluster(plan, originX, originY, gridMaxX);
+    return placeGridCluster(plan, fallbackX, originY, gridMaxX);
   }
 
   for (const rowY of candidateYs(placed, originY)) {
-    for (const x of candidateXsOnRow(rowY, width, height, placed, originX, gridMaxX)) {
+    for (const x of candidateXsOnRow(
+      rowY,
+      width,
+      height,
+      placed,
+      preferredXs,
+      gridMaxX,
+      farWestX,
+      westEdge,
+    )) {
       const placement = placeGridCluster(plan, x, rowY, gridMaxX);
       if (!placement) continue;
       if (!collidesWithPlaced(bboxToRect(placement.bbox), placed)) {
@@ -536,22 +560,63 @@ function placeGridCluster(
 }
 
 /**
- * Wide grid: folder clusters pack left→right using a skyline shelf.
+ * Preferred X origins for a cluster: snug against the west no-go shelf when it fits,
+ * otherwise start at the far-west grid limit (chain will bridge east over the hole).
+ * Always also try the east shelf so multi-folder packs can sit on both sides.
+ */
+function preferredOriginsForPlan(
+  plan: GridClusterPlan,
+  westEdge: number,
+  eastEdge: number,
+  farWestX: number,
+): number[] {
+  const pureW = Math.max(plan.estimate.width, bankOuterWidth());
+  const snugWestX = snapToGrid(westEdge - pureW);
+  // If the pure chain is wider than the west band, start at far west so wrapOnNoGo
+  // fills left of the red zone then jumps to the east wing.
+  const westStart = snugWestX < farWestX ? farWestX : snugWestX;
+  // Order matters: try compact west first, then east shelf. farWest only as last resort.
+  const ordered = [westStart, eastEdge];
+  if (snugWestX !== westStart) ordered.push(snugWestX);
+  if (farWestX !== westStart) ordered.push(farWestX);
+  return ordered;
+}
+
+/**
+ * Skyline pack folder clusters against the synth no-go shelves.
+ * `seedRects` are existing session banks (merge) or empty (replace / fresh).
  * Chains may bridge west→east over the synth hole; the no-go rect stays empty.
  */
-function layoutWideGrid(
+function layoutClustersAgainstNoGo(
   groups: FolderGroup[],
   options: FolderChainLayoutOptions,
+  seedRects: C15Rect[] = [],
 ): ImportedBankEntry[] {
-  const { originX, originY, maxX: gridMaxX } = getGridBounds();
-  const plans = planGridClusters(groups, options, gridMaxX);
+  const { westEdge, eastEdge, originY, farWestX, maxX: gridMaxX } = getNoGoShelfEdges();
+  const plans = planGridClusters(groups, options);
   const result: ImportedBankEntry[] = [];
-  const placedRects: C15Rect[] = [];
+  const placedRects: C15Rect[] = [...seedRects];
 
   for (const plan of plans) {
+    const preferredXs = preferredOriginsForPlan(plan, westEdge, eastEdge, farWestX);
+    const primaryX = preferredXs[0]!;
+
     let placement =
-      trySkylinePlacement(plan, placedRects, originX, originY, gridMaxX) ??
-      placeGridCluster(plan, originX, lowestPlacedY(placedRects, originY), gridMaxX);
+      trySkylinePlacement(
+        plan,
+        placedRects,
+        preferredXs,
+        originY,
+        gridMaxX,
+        farWestX,
+        westEdge,
+      ) ??
+      placeGridCluster(
+        plan,
+        primaryX,
+        lowestPlacedY(placedRects, originY),
+        gridMaxX,
+      );
 
     if (!placement) {
       throw new Error(`Failed to place folder cluster "${plan.group.folder}"`);
@@ -560,7 +625,16 @@ function layoutWideGrid(
     let rect = bboxToRect(placement.bbox);
     if (collidesWithPlaced(rect, placedRects)) {
       const fallbackY = lowestPlacedY(placedRects, originY);
-      placement = placeGridCluster(plan, originX, fallbackY, gridMaxX);
+      placement =
+        trySkylinePlacement(
+          plan,
+          placedRects,
+          preferredXs,
+          fallbackY,
+          gridMaxX,
+          farWestX,
+          westEdge,
+        ) ?? placeGridCluster(plan, primaryX, fallbackY, gridMaxX);
       if (!placement) {
         throw new Error(`Failed to place folder cluster "${plan.group.folder}" (fallback)`);
       }
@@ -577,48 +651,10 @@ function layoutWideGrid(
   return result;
 }
 
-function layoutVerticalStackBelow(
-  groups: FolderGroup[],
-  options: FolderChainLayoutOptions,
-  existingBanks: Bank[],
-): ImportedBankEntry[] {
-  const placed: ImportedBankEntry[] = [];
-  const existingBbox = bboxFromBanks(existingBanks);
-  let cursorY = existingBbox
-    ? snapToGrid(existingBbox.maxY + LAYOUT_BANDS.rowGap)
-    : getGridBounds().originY;
-
-  for (const group of groups) {
-    const sorted = sortEntriesInFolder(group.entries, options.sortBy);
-    const sourceBanks = sorted.map((e) => e.bank);
-    const chainOffset = folderParentChainOffset();
-    const parent = createFolderParentBank(group.folder, LAYOUT_BANDS.gridOriginX, cursorY);
-    const { banks: chainBanks, bbox: contentBbox } = layoutHorizontalAttachChain(
-      sourceBanks,
-      snapToGrid(LAYOUT_BANDS.gridOriginX + chainOffset),
-      cursorY,
-      { maxChainX: LAYOUT_BANDS.gridMaxX, wrapOnNoGo: true },
-    );
-
-    if (contentBbox) {
-      const clusterBanks = wireFolderParent(parent, chainBanks);
-      const bbox = bboxFromBanks(clusterBanks);
-      if (bbox) {
-        placed.push(...buildFolderClusterEntries(group.folder, sorted, clusterBanks, bbox));
-        cursorY = snapToGrid(bbox.maxY + LAYOUT_BANDS.rowGap);
-        continue;
-      }
-    }
-    cursorY = snapToGrid(cursorY + LAYOUT_BANDS.rowGap);
-  }
-
-  return placed;
-}
-
 /**
  * Place each containing folder as its own horizontal attach chain.
- * On a fresh canvas, folders pack in a wide grid with the synth zone left empty.
- * When merging into an existing canvas, new folders stack below existing banks.
+ * Fresh / replace: pack against the synth no-go (red zone left empty).
+ * Merge: same packing with existing banks as obstacles.
  */
 export function applyFolderChainLayout(
   entries: ImportedBankEntry[],
@@ -627,12 +663,8 @@ export function applyFolderChainLayout(
 ): ImportedBankEntry[] {
   const stripped = stripAllAttachments(entries);
   const groups = groupByContainingFolder(stripped);
-
-  if (existingBanks.length > 0) {
-    return layoutVerticalStackBelow(groups, options, existingBanks);
-  }
-
-  return layoutWideGrid(groups, options);
+  const seedRects = existingBanks.map((bank) => bankToC15Rect(bank));
+  return layoutClustersAgainstNoGo(groups, options, seedRects);
 }
 
 export function entriesToBanks(entries: ImportedBankEntry[]): Bank[] {

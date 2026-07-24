@@ -16,7 +16,10 @@ export type DisplayPositionMap = Map<string, Position2D>;
 function attachmentDepth(bank: Bank, byUuid: Map<string, Bank>): number {
   let depth = 0;
   let current: Bank | undefined = bank;
+  const visited = new Set<string>();
   while (current?.attachedToUuid) {
+    if (visited.has(current.uuid)) break;
+    visited.add(current.uuid);
     const parent = byUuid.get(current.attachedToUuid);
     if (!parent) break;
     depth++;

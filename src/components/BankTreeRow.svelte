@@ -44,7 +44,7 @@
   }
 </script>
 
-<li>
+<li data-sidebar-bank-uuid={node.bank.uuid}>
   {#if showRename}
     <div class="border-b border-c15-border/50 px-3 py-2">
       <input

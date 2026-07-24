@@ -27,6 +27,16 @@ export const bankMeta = writable({
   focusBankUuid: null as string | null,
   /** When set with focusBankUuid, center on this preset row instead of the bank. */
   focusPresetUuid: null as string | null,
+  /**
+   * One-shot: scroll the Presets sidebar browse list so this preset row is visible.
+   * Set when selecting a preset on the canvas; cleared by PresetBrowseList after scroll.
+   */
+  revealSidebarPresetUuid: null as string | null,
+  /**
+   * One-shot: scroll the Banks sidebar tree so this bank row is visible.
+   * Set when selecting a bank on the canvas; cleared by BanksPanel after scroll.
+   */
+  revealSidebarBankUuid: null as string | null,
   /** Inline preset rename target (F2 / context menu). */
   renamingPreset: null as { bankUuid: string; presetUuid: string } | null,
   /** Multi-preset selection within a single bank (canvas UI). */

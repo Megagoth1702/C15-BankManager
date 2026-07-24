@@ -100,9 +100,23 @@ export async function runMassImportPipeline(
   const { entries: rawEntries, errors } = await parseAllEntries(files, onProgress);
 
   const baseBanks = options.canvasMode === 'replace' ? [] : existingBanks;
-  const laidOut = applyFolderChainLayout(rawEntries, { sortBy: options.sortBy }, baseBanks);
+
+  // Mint unique bank/preset UUIDs *before* layout. Duplicate source files (same bank UUID)
+  // must not share an id during attach-chain wiring — that creates self-links and hangs
+  // attachment walks / collapses Svelte `{#each}` keys on the canvas.
+  const remappedSourceBanks = remapIncomingAgainstSession(
+    baseBanks,
+    rawEntries.map((entry) => entry.bank),
+  );
+  const uniqueEntries = rawEntries.map((entry, i) => ({
+    ...entry,
+    bank: remappedSourceBanks[i]!,
+  }));
+
+  const laidOut = applyFolderChainLayout(uniqueEntries, { sortBy: options.sortBy }, baseBanks);
 
   const incoming = entriesToBanks(laidOut);
+  // Folder-parent banks are created during layout; remint if they collide with the session.
   const remapped = remapIncomingAgainstSession(baseBanks, incoming);
   const layoutMeta = remapMetaForIncoming(laidOut, remapped);
   const merged = options.canvasMode === 'replace' ? remapped : [...baseBanks, ...remapped];

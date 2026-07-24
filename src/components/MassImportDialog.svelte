@@ -75,10 +75,10 @@
     >
       <div class="border-b border-c15-border px-5 py-4">
         <h2 id="mass-import-title" class="text-base font-semibold text-c15-text">
-          Mass folder import
+          Import banks
         </h2>
         <p class="mt-1 text-xs text-c15-text-muted">
-          Banks in each folder attach together; folders pack in a wide grid with the synth zone left empty.
+          Banks in each folder attach together and pack around the synth parameter zone (red no-go).
         </p>
       </div>
 
@@ -157,7 +157,7 @@
                   />
                   <span>
                     <span class="block font-medium text-c15-text">Merge</span>
-                    <span class="text-c15-text-muted">Keep existing banks, append below</span>
+                    <span class="text-c15-text-muted">Keep existing banks; place new ones in free space</span>
                   </span>
                 </label>
               </div>

@@ -65,12 +65,18 @@ export function selectBanks(
       ...base,
       selectedBankUuids: next,
       deleteFocus: next.length > 0 ? 'bank' : null,
+      selectionSurface: 'canvas',
+      // Marquee / batch selection is canvas-origin — reveal primary bank in the sidebar tree.
+      revealSidebarBankUuid: primary,
       renamingBankUuid:
         base.renamingBankUuid && primary && base.renamingBankUuid !== primary
           ? null
           : base.renamingBankUuid,
     };
   });
+  if (uuids.length > 0) {
+    setSidebarTab('banks');
+  }
   log('store', 'selectBanks', { count: uuids.length, mode });
   selTraceSelection('store.selectBanks', {
     mode,
@@ -117,6 +123,7 @@ export function selectPreset(
         withPresetFocus(m, surface, {
           presetSelectionBankUuid: bankUuid,
           selectedPresetUuids: selected,
+          revealSidebarPresetUuid: surface === 'canvas' ? presetUuid : null,
         }),
       );
       syncBankSelectedPreset(bankUuid, presetUuid);
@@ -141,6 +148,7 @@ export function selectPreset(
         selectedPresetUuids: frozen,
         presetSelectionAnchorUuid: presetUuid,
         presetSelectionBaseUuids: frozen,
+        revealSidebarPresetUuid: surface === 'canvas' ? presetUuid : null,
       }),
     );
     if (frozen.length > 0) {
@@ -162,6 +170,7 @@ export function selectPreset(
       selectedPresetUuids: [presetUuid],
       presetSelectionAnchorUuid: presetUuid,
       presetSelectionBaseUuids: [presetUuid],
+      revealSidebarPresetUuid: surface === 'canvas' ? presetUuid : null,
     }),
   );
   syncBankSelectedPreset(bankUuid, presetUuid);
@@ -194,6 +203,12 @@ export function selectPresetsBatch(
   if (sameSelection && !meta.renamingPreset) {
     setSidebarTab('presets');
     syncBankSelectedPreset(bankUuid, primary);
+    if (surface === 'canvas') {
+      bankMeta.update((m) => ({
+        ...m,
+        revealSidebarPresetUuid: primary,
+      }));
+    }
     return;
   }
   const renaming = meta.renamingPreset;
@@ -211,6 +226,7 @@ export function selectPresetsBatch(
       selectedPresetUuids: frozen,
       presetSelectionAnchorUuid: primary,
       presetSelectionBaseUuids: frozen,
+      revealSidebarPresetUuid: surface === 'canvas' ? primary : null,
     }),
   );
   syncBankSelectedPreset(bankUuid, primary);
@@ -248,6 +264,7 @@ export function selectBank(
         selectedBankUuids: [],
         renamingBankUuid: null,
         deleteFocus: null,
+        revealSidebarBankUuid: null,
       });
     }
 
@@ -267,11 +284,15 @@ export function selectBank(
     const primary = next[next.length - 1] ?? null;
     const cleared =
       mode === 'replace' ? clearPresetSelectionFields(m) : m;
+    // Toggle deselect of last bank leaves no selection to reveal.
+    const reveal =
+      surface === 'canvas' && primary != null ? primary : null;
     return {
       ...cleared,
       selectedBankUuids: next,
       deleteFocus: uuid !== null && next.length > 0 ? 'bank' : null,
       selectionSurface: surface,
+      revealSidebarBankUuid: reveal,
       renamingBankUuid:
         cleared.renamingBankUuid && primary && cleared.renamingBankUuid !== primary
           ? null
@@ -317,6 +338,7 @@ export function selectBankRange(
       renamingBankUuid: null,
       deleteFocus: 'bank',
       selectionSurface: 'sidebar',
+      revealSidebarBankUuid: null,
     }));
     log('store', 'selectBankRange', { uuid, lo, hi });
     return;

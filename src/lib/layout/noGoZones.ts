@@ -89,6 +89,25 @@ export function getGridBounds(): GridBounds {
   };
 }
 
+/** West/east shelf edges just outside the synth no-go (banks pack against these). */
+export function getNoGoShelfEdges(): {
+  westEdge: number;
+  eastEdge: number;
+  originY: number;
+  farWestX: number;
+  maxX: number;
+} {
+  const noGo = getSynthNoGoRect();
+  const margin = LAYOUT_BANDS.synthMargin;
+  return {
+    westEdge: snapToGrid(noGo.x - margin),
+    eastEdge: snapToGrid(noGo.x + noGo.width + margin),
+    originY: snapToGrid(noGo.y),
+    farWestX: LAYOUT_BANDS.gridOriginX,
+    maxX: LAYOUT_BANDS.gridMaxX,
+  };
+}
+
 /** @deprecated Perimeter layout — kept for layout report compatibility. */
 export interface PerimeterAnchors {
   left: { originX: number; startY: number; maxChainX: number };

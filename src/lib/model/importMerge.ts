@@ -63,10 +63,6 @@ function collectPresetUuids(banks: readonly Bank[]): Set<string> {
   return used;
 }
 
-function resolveBankUuid(uuid: string, bankRemap: ReadonlyMap<string, string>): string {
-  return bankRemap.get(uuid) ?? uuid;
-}
-
 function remapBankPresets(
   bank: Bank,
   usedPresetUuids: Set<string>,
@@ -93,29 +89,51 @@ function remapBankPresets(
 /**
  * Assign fresh C15 UUIDs to incoming banks/presets that collide with the session
  * (or earlier banks in the same import batch). Updates attachments and preset-order.
+ *
+ * Collisions **within the batch** are handled per instance. A single old→new map would
+ * incorrectly rewrite the first bank to the second's reminted id (and can create
+ * self-attachments that hang attachment walks / Svelte keyed lists).
  */
 export function remapIncomingAgainstSession(current: Bank[], incoming: Bank[]): Bank[] {
   const usedBankUuids = new Set(current.map((bank) => bank.uuid.toLowerCase()));
   const usedPresetUuids = collectPresetUuids(current);
-  const bankRemap = new Map<string, string>();
 
-  for (const bank of incoming) {
+  // Per-index final bank UUID: first occurrence keeps its id (if free); later collisions remint.
+  const finalBankUuids: string[] = new Array(incoming.length);
+  // Original uuid (lowercase) → final uuid of the *first* incoming instance with that id.
+  // Attachment targets that pointed at the shared source id resolve to the first bank.
+  const firstInstanceFinalByOriginal = new Map<string, string>();
+
+  for (let i = 0; i < incoming.length; i++) {
+    const bank = incoming[i]!;
     const key = bank.uuid.toLowerCase();
+    let finalUuid: string;
     if (usedBankUuids.has(key)) {
-      const newUuid = freshC15Uuid(usedBankUuids);
-      bankRemap.set(bank.uuid, newUuid);
+      finalUuid = freshC15Uuid(usedBankUuids);
     } else {
       usedBankUuids.add(key);
+      finalUuid = bank.uuid;
+    }
+    finalBankUuids[i] = finalUuid;
+    if (!firstInstanceFinalByOriginal.has(key)) {
+      firstInstanceFinalByOriginal.set(key, finalUuid);
     }
   }
 
-  return incoming.map((bank) => {
-    const uuid = resolveBankUuid(bank.uuid, bankRemap);
+  return incoming.map((bank, i) => {
+    const uuid = finalBankUuids[i]!;
     const presetFields = remapBankPresets(bank, usedPresetUuids);
 
     let attachedToUuid = bank.attachedToUuid;
+    let attachDirection = bank.attachDirection;
     if (attachedToUuid) {
-      attachedToUuid = resolveBankUuid(attachedToUuid, bankRemap);
+      const targetKey = attachedToUuid.toLowerCase();
+      attachedToUuid = firstInstanceFinalByOriginal.get(targetKey) ?? attachedToUuid;
+      // Self-link can appear when two source banks shared a UUID before remint.
+      if (attachedToUuid.toLowerCase() === uuid.toLowerCase()) {
+        attachedToUuid = null;
+        attachDirection = null;
+      }
     }
 
     return {
@@ -123,6 +141,7 @@ export function remapIncomingAgainstSession(current: Bank[], incoming: Bank[]): 
       uuid,
       ...presetFields,
       attachedToUuid,
+      attachDirection,
     };
   });
 }
