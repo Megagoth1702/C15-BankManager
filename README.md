@@ -4,7 +4,7 @@ A browser-based preset manager for the Nonlinear Labs C15. Edit banks and preset
 
 **[Open the app](https://megagoth1702.github.io/C15-OfflinePresetManager/)**
 
-As of 24 July 2026 the tool ships with access to 8,559 official and sound-designer presets. Use it to reorganize, merge, dock, and rearrange large libraries on a computer, with or without the synthesizer attached. At this stage it covers the same core bank and preset workflows as the instrument’s own interface, built for a real display, mouse, and keyboard.
+As of 24 July 2026 there are 8,559 official and sound-designer presets for the C15 available. Use This tool to reorganize, merge, dock, and rearrange large libraries on a computer, with or without the synthesizer attached. At this stage it covers the same core bank and preset workflows as the instrument’s own interface, built for a real display, mouse, and keyboard.
 
 ![Live mode — C15 Offline Preset Manager](img/LiveScreenshot.png)
 
