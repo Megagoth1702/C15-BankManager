@@ -1,4 +1,4 @@
-C15 Offline Preset Manager — Local Live pack
+C15 Bank Manager — Local Live pack
 ============================================
 
 Why this pack?
@@ -20,7 +20,7 @@ First run
 
 Updates
   On Start, the pack checks GitHub Releases and can download a newer pack
-  automatically. Your "runtime" folder is kept. To skip: set OPM_SKIP_UPDATE=1
+  automatically. Your "runtime" folder is kept. To skip: set C15BM_SKIP_UPDATE=1
 
 Live mode
   In the app: open the Offline/Live control → enter C15 IP (often 192.168.8.2)
@@ -35,6 +35,6 @@ Support files
   launcher.log  — startup / update messages if something fails
 
 Downloads / new versions
-  https://github.com/Megagoth1702/C15-OfflinePresetManager/releases/latest
+  https://github.com/Megagoth1702/C15-BankManager/releases/latest
 
 Offline editing also works on the website; only Live needs this pack.

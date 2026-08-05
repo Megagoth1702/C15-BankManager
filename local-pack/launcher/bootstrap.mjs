@@ -22,7 +22,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PACK_ROOT = path.resolve(__dirname, '..');
-const DEFAULT_PORT = Number(process.env.OPM_PORT || 17815);
+const DEFAULT_PORT = Number(process.env.C15BM_PORT || 17815);
 
 /** @type {import('node:http').Server | null} */
 let httpServer = null;
@@ -127,7 +127,7 @@ async function main() {
   installSignalHandlers();
 
   console.log('');
-  console.log('  C15 Offline Preset Manager - Local Live pack');
+  console.log('  C15 Bank Manager - Local Live pack');
   console.log('  -------------------------------------------');
   console.log('');
 
@@ -135,7 +135,7 @@ async function main() {
   freeDefaultPort(DEFAULT_PORT, log);
   writePidFile();
 
-  const skipUpdate = process.env.OPM_SKIP_UPDATE === '1';
+  const skipUpdate = process.env.C15BM_SKIP_UPDATE === '1';
   if (!skipUpdate) {
     log('Checking for updates…');
     try {
@@ -152,7 +152,7 @@ async function main() {
       log(`Update error (continuing): ${e.message || e}`);
     }
   } else {
-    log('Update check skipped (OPM_SKIP_UPDATE=1)');
+    log('Update check skipped (C15BM_SKIP_UPDATE=1)');
   }
 
   console.log('  Starting local server…');

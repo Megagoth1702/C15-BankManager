@@ -8,8 +8,8 @@ export default defineConfig(({ mode }) => {
   const c15Host = env.C15_HOST || '192.168.8.2';
   const c15Port = env.C15_PORT || '8080';
   const c15Target = `http://${c15Host}:${c15Port}`;
-  // Pages: /C15-OfflinePresetManager/  · Local pack: ./  (set VITE_BASE)
-  const base = env.VITE_BASE || process.env.VITE_BASE || '/C15-OfflinePresetManager/';
+  // Pages: /C15-BankManager/  · Local pack: ./  (set VITE_BASE)
+  const base = env.VITE_BASE || process.env.VITE_BASE || '/C15-BankManager/';
 
   return {
     base,

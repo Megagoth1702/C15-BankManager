@@ -1,10 +1,10 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title C15 Offline Preset Manager - Local Live pack
+title C15 Bank Manager - Local Live pack
 
 echo.
-echo   C15 Offline Preset Manager - Local Live pack
+echo   C15 Bank Manager - Local Live pack
 echo.
 
 REM Prefer portable Node; bootstrap it on first run

@@ -1,4 +1,4 @@
-# C15 Offline Preset Manager
+# C15 Bank Manager
 
 Browser preset manager for the Nonlinear Labs **C15**. Banks, presets, docks, and clusters use the same rules as the instrument. The differences:
 - speed
@@ -8,7 +8,7 @@ Browser preset manager for the Nonlinear Labs **C15**. Banks, presets, docks, an
 
 You can edit fully offline on `.nlbackup` and bank XML, or connect the C15 over Wi‑Fi and run the same canvas against the live instrument. On GitHub Pages the app is always available offline. Live mode needs a small local pack (browsers block the C15’s plain `ws://` WebSocket from an HTTPS page).
 
-**[Open the app](https://megagoth1702.github.io/C15-OfflinePresetManager/)**
+**[Open the app](https://megagoth1702.github.io/C15-BankManager/)**
 
 As of 24 July 2026 the public C15 library lists **8,559** official and sound-designer presets. This tool is meant for libraries that size: import, merge, dock, search, multi-select, and export without doing that work on the instrument UI.
 
@@ -31,7 +31,7 @@ Live: same canvas and editing tools, talking to the C15 on the local network. La
 
 ## Local Live pack
 
-Download from **[GitHub Releases (latest)](https://github.com/Megagoth1702/C15-OfflinePresetManager/releases/latest)**, unzip, then run `Start.bat` (Windows), `Start.command` (macOS), or `Start.sh` (Linux).
+Download from **[GitHub Releases (latest)](https://github.com/Megagoth1702/C15-BankManager/releases/latest)**, unzip, then run `Start.bat` (Windows), `Start.command` (macOS), or `Start.sh` (Linux).
 
 The pack serves the app at `http://localhost` so Connect can open a WebSocket to the C15. First run fetches a small official Node.js runtime once. Later starts can pull app updates from Releases.
 
@@ -43,7 +43,7 @@ GitHub Pages stays useful for offline import and export. It cannot host Live mod
 
 Offline:
 
-1. Open the [app](https://megagoth1702.github.io/C15-OfflinePresetManager/).
+1. Open the [app](https://megagoth1702.github.io/C15-BankManager/).
 2. Import banks (single or multiple `.xml`, folders, or `.nlbackup` files), merge or replace the canvas
 3. Arrange, dock, search, rename, sort.
 4. Export a session `.nlbackup` or one `.xml` per selected bank.
@@ -130,6 +130,6 @@ A full library on the order of 8,559 presets can use a lot of RAM and may hitch 
 
 ## Screenshots
 
-![Live mode, C15 Offline Preset Manager](img/LiveScreenshot.png)
+![Live mode, C15 Bank Manager](img/LiveScreenshot.png)
 
 Docked clusters use golden borders and header lines. Preset search marks matches with N, C, or D for name, comment, or device.

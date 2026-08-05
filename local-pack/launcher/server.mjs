@@ -9,12 +9,12 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
-const APP_DIR = process.env.OPM_APP_DIR
-  ? path.resolve(process.env.OPM_APP_DIR)
+const APP_DIR = process.env.C15BM_APP_DIR
+  ? path.resolve(process.env.C15BM_APP_DIR)
   : path.join(ROOT, 'app');
 
 const HOST = '127.0.0.1';
-const DEFAULT_PORT = Number(process.env.OPM_PORT || 17815);
+const DEFAULT_PORT = Number(process.env.C15BM_PORT || 17815);
 const MAX_PORT_TRIES = 20;
 
 const MIME = {

@@ -3,7 +3,7 @@
  *
  * Usage: npm run pack:local
  *
- * Output: release-artifacts/C15-OPM-local.zip
+ * Output: release-artifacts/C15-BankManager-local.zip
  * (plus an unpacked folder for smoke-testing)
  */
 import fs from 'node:fs';
@@ -16,8 +16,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 const DIST = path.join(ROOT, 'dist');
 const ARTIFACTS = path.join(ROOT, 'release-artifacts');
-const STAGE = path.join(ARTIFACTS, 'C15-OPM-local');
-const ZIP_NAME = 'C15-OPM-local.zip';
+const STAGE = path.join(ARTIFACTS, 'C15-BankManager-local');
+const ZIP_NAME = 'C15-BankManager-local.zip';
 const LOCAL_PACK_SRC = path.join(ROOT, 'local-pack');
 
 function log(msg) {
@@ -70,7 +70,7 @@ function writeVersionJson(appDir) {
   const version = pkg.version || '0.0.0';
   const payload = {
     version,
-    name: 'C15 Offline Preset Manager',
+    name: 'C15 Bank Manager',
     channel: 'local-pack',
     builtAt: new Date().toISOString(),
   };
@@ -79,10 +79,10 @@ function writeVersionJson(appDir) {
 }
 
 function assertLocalBase(indexHtml) {
-  // Pages build embeds /C15-OfflinePresetManager/ — local must not
-  if (indexHtml.includes('/C15-OfflinePresetManager/')) {
+  // Pages build embeds /C15-BankManager/ — local pack must use relative assets.
+  if (indexHtml.includes('/C15-BankManager/')) {
     throw new Error(
-      'dist/index.html still references /C15-OfflinePresetManager/ — VITE_BASE=./ build failed',
+      'dist/index.html still references a Pages base path — VITE_BASE=./ build failed',
     );
   }
   if (!indexHtml.includes('./assets/') && !indexHtml.includes('assets/')) {
@@ -166,7 +166,7 @@ function main() {
   log(`  Zip:      ${zipPath}`);
   log(`  SHA256:   ${sha}`);
   log('');
-  log('Upload the zip to a GitHub Release as asset name exactly: C15-OPM-local.zip');
+  log('Upload the zip to a GitHub Release as asset name exactly: C15-BankManager-local.zip');
   log('See .ObsidianBrain/Ops/LOCAL_PACK.md for the Releases checklist.');
 }
 

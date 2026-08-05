@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 echo ""
-echo "  C15 Offline Preset Manager — Local Live pack"
+echo "  C15 Bank Manager — Local Live pack"
 echo ""
 
 chmod +x "./launcher/ensure-node.sh" 2>/dev/null || true

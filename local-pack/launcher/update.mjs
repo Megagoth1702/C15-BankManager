@@ -12,10 +12,10 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PACK_ROOT = path.resolve(__dirname, '..');
 
-const REPO = 'Megagoth1702/C15-OfflinePresetManager';
+const REPO = 'Megagoth1702/C15-BankManager';
 const API_LATEST = `https://api.github.com/repos/${REPO}/releases/latest`;
-const ASSET_NAME = 'C15-OPM-local.zip';
-const USER_AGENT = 'C15-OfflinePresetManager-LocalPack';
+const ASSET_NAME = 'C15-BankManager-local.zip';
+const USER_AGENT = 'C15-BankManager-LocalPack';
 
 function log(line) {
   const msg = `[update] ${line}`;
@@ -143,7 +143,7 @@ function extractZip(zipPath, destDir) {
 
 /**
  * Zip layout from pack-local: either
- *   C15-OPM-local/app/ ...
+ *   C15-BankManager-local/app/ ...
  * or flat app/ at root of extract.
  */
 function findPackPayload(extractRoot) {
