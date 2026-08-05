@@ -45,7 +45,7 @@ Unzip, then double-click `Start.bat` (Windows), `Start.command` (macOS), or `Sta
 
 ### Smart Folder Import + Auto-Dock
 
-Point the app at a folder that contains subfolders (for example by sound designer). Banks from each subfolder are sorted, docked into chains, and spaced so clusters do not overlap. Empty helper banks for folder names are never created.
+Point the app at a folder that contains subfolders (for example by sound designer). Banks from each subfolder are sorted, docked into chains, and spaced so clusters do not overlap.
 
 ### Visual docking (same behaviour as the C15)
 
