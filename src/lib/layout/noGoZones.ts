@@ -58,21 +58,29 @@ export const LAYOUT_BANDS = {
   gridOriginX: -6400,
   /** North edge — aligned with synth no-go top. */
   gridOriginY: -645,
-  /** East edge — chains may extend to here before wrapping. */
+  /** East edge of the placement grid. */
   gridMaxX: 12800,
   /** Number of horizontal columns for folder cluster placement. */
   gridColumns: 6,
   /** Gap from synth no-go rect edge (C15 units). */
   synthMargin: 30,
-  /** Gap between folder clusters on the same grid row. */
-  clusterGap: 180,
-  /** Gap between grid rows of folder clusters. */
-  rowGap: 240,
-  /** Vertical gap between wrapped rows within one folder chain. */
+  /**
+   * Min horizontal gap between different folder-cluster bboxes (C15 units).
+   * Sized well above bank-to-bank attach adjacency so subfolder groups read as
+   * distinct visual islands under free-rect residual packing.
+   */
+  clusterGap: 480,
+  /**
+   * Min vertical gap between different folder-cluster bboxes (C15 units).
+   * Matched to clusterGap so separation is isotropic and easy to read.
+   */
+  rowGap: 480,
+  /** Vertical gap reserved for multi-row attach geometry (manual docks / legacy). */
   chainRowGap: 120,
   /** @deprecated Perimeter layout — kept for log compatibility. */
   leftColumnX: -6400,
-  folderGap: 240,
+  /** @deprecated Prefer clusterGap/rowGap — kept for log compatibility. */
+  folderGap: 480,
 } as const;
 
 export interface GridBounds {

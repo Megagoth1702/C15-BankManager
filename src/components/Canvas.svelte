@@ -81,12 +81,19 @@
   } from '../lib/canvas/viewportVisibility';
   import type { DockEdge } from '../lib/model/attachOperation';
   import {
+    activeAttachCorridorsForBank,
+    buildClusterTopology,
+    type ActiveAttachCorridorId,
+    type ClusterTopology,
+  } from '../lib/model/clusterTopology';
+  import {
     appSettings,
     bankMeta,
     banks,
     beginUndoGroup,
     cancelRenameBank,
     createBank,
+    createBankFromPresets,
     detachBanksCrossingMoveSet,
     dockBankAtEdge,
     endUndoGroup,
@@ -132,6 +139,7 @@
   } from '../lib/canvas/lod';
   import BankCard from './BankCard.svelte';
   import BankCardLite from './BankCardLite.svelte';
+  import BankInfoDialog from './BankInfoDialog.svelte';
   import CanvasContextMenu from './CanvasContextMenu.svelte';
   import ConnectionLines from './ConnectionLines.svelte';
   import PresetContextMenu from './PresetContextMenu.svelte';
@@ -252,10 +260,10 @@
   /** Reuse attach corridors while display origins are stable during a bank drag. */
   let dockCorridorCache: AttachCorridorCache | null = null;
   /**
-   * Attach corridor chrome on full cards — deferred one frame after grab so the
-   * grab re-render (detach + selection + drag class) does not also mount corridor
-   * divs in the same turn. Only cluster + dock-hover banks show corridors (not
-   * every visible full card).
+   * Attach corridor chrome on viewport banks — deferred one frame after grab so
+   * the grab re-render (detach + selection + drag class) does not also mount
+   * corridor divs in the same turn. Shown on every mounted bank (viewport cull)
+   * so free attach faces are obvious while dragging.
    */
   let showAttachSlotsChrome = $state(false);
   let showAttachSlotsRafId: number | null = null;
@@ -309,6 +317,9 @@
     bankUuid: string;
     presetUuids: string[];
   } | null>(null);
+
+  /** Bank Info dialog (header context menu). */
+  let bankInfoUuid = $state<string | null>(null);
 
   /**
    * Canvas right-click menu: empty canvas (create + export) or bank header (rename + export).
@@ -399,15 +410,29 @@
     });
   }
 
-  /** Corridor chrome only for movers + current dock pair (not every full card). */
-  function bankShowsAttachSlots(uuid: string): boolean {
-    if (!showAttachSlotsChrome) return false;
-    if (dragClusterUuids?.has(uuid)) return true;
-    if (dockHover?.targetUuid === uuid || dockHover?.draggedUuid === uuid) {
-      return true;
-    }
-    if (bankDragGrab?.uuid === uuid) return true;
-    return false;
+  /**
+   * Corridor chrome for every bank currently mounted in the viewport while a
+   * bank drag is active. Faces still filtered by isTapeActive (active corridors).
+   */
+  function bankShowsAttachSlots(_uuid: string): boolean {
+    return showAttachSlotsChrome;
+  }
+
+  /**
+   * C15 empty-tape activity for corridor paint. Rebuilt from live bank
+   * attachments (post grab-time detach) whenever the bank list changes mid-drag.
+   */
+  const dragTapeTopology = $derived.by((): ClusterTopology | null => {
+    if (!bankDragActive) return null;
+    return buildClusterTopology($banks);
+  });
+
+  function bankActiveAttachCorridors(
+    uuid: string,
+  ): ReadonlySet<ActiveAttachCorridorId> | null {
+    const topo = dragTapeTopology;
+    if (!topo) return null;
+    return activeAttachCorridorsForBank(topo, uuid);
   }
 
   function canvasRectLike(): DOMRect {
@@ -1283,6 +1308,7 @@
     }
     if (canvasContextMenu) {
       if (target.closest('[data-canvas-context-menu]')) return;
+      if (target.closest('[data-bank-info-dialog]')) return;
       closeCanvasContextMenu();
     }
   }
@@ -1307,12 +1333,17 @@
       return;
     }
 
-    // Preset rows handle their own menu (stopPropagation). Still skip when over a bank.
+    // Card handlers stopPropagation for header/preset menus. If the event still
+    // reaches the canvas over a bank (lite body, tape, gaps), open the bank menu
+    // instead of the empty-canvas "Create new bank" menu.
     if (!canvasEl) return;
     const rect = canvasEl.getBoundingClientRect();
     const c15 = clientToC15(event.clientX, event.clientY, rect, viewport);
     const hit = findBankAtC15Point($banks, c15.x, c15.y, undefined, displayByUuid);
-    if (hit) return;
+    if (hit) {
+      handleBankContextMenu(hit.uuid, event);
+      return;
+    }
 
     closePresetContextMenu();
     updatePointerPosition(event.clientX, event.clientY);
@@ -1370,6 +1401,14 @@
     });
   }
 
+  function handleBankInfoFromContextMenu(): void {
+    const uuid = getPrimarySelectedUuid();
+    if (!uuid) return;
+    bankInfoUuid = uuid;
+    closeCanvasContextMenu();
+    log('bank', 'bank info open', { uuid });
+  }
+
   function handleRenameBankFromContextMenu(): void {
     const uuid = getPrimarySelectedUuid();
     if (!uuid) return;
@@ -1377,23 +1416,22 @@
     log('canvas', 'rename bank from context menu', { uuid });
   }
 
-  function handleExportAllFromContextMenu(): void {
-    if (exportAllAsBackup()) {
+  async function handleExportAllFromContextMenu(): Promise<void> {
+    if (await exportAllAsBackup()) {
       log('canvas', 'export all from context menu');
     }
   }
 
-  function handleExportSelectedFromContextMenu(): void {
+  async function handleExportSelectedFromContextMenu(): Promise<void> {
     const count = $bankMeta.selectedBankUuids.length;
-    if (exportSelectedBanks()) {
+    if (await exportSelectedBanks()) {
       log('canvas', 'export selected backup from context menu', { count });
     }
   }
 
   async function handleExportSelectedXmlFromContextMenu(): Promise<void> {
     const count = $bankMeta.selectedBankUuids.length;
-    const ok = await Promise.resolve(exportSelectedBanksAsXml());
-    if (ok) {
+    if (await exportSelectedBanksAsXml()) {
       log('canvas', 'export selected XML from context menu', { count });
     }
   }
@@ -1797,7 +1835,31 @@
           zoom: viewport.zoom,
         });
       } else {
-        log('preset', 'drag drop cancel', { reason: 'no target bank' });
+        // C15 PresetManager.drop(IPreset on empty): create-new-bank-from-presets at drop pos.
+        // Always copy (source kept) — not a move, even with Ctrl.
+        const rect = canvasRectLike();
+        if (rect.width > 0 && rect.height > 0) {
+          const c15 = clientToC15(event.clientX, event.clientY, rect, viewport);
+          const created = createBankFromPresets(
+            drag.sourceBankUuid,
+            drag.presetUuids,
+            { x: c15.x, y: c15.y },
+          );
+          log(
+            'preset',
+            created ? 'drag drop new bank' : 'drag drop new bank failed',
+            {
+              source: drag.sourceBankUuid,
+              count: drag.presetUuids.length,
+              x: created?.x ?? c15.x,
+              y: created?.y ?? c15.y,
+              newBank: created?.uuid ?? null,
+              zoom: viewport.zoom,
+            },
+          );
+        } else {
+          log('preset', 'drag drop cancel', { reason: 'no canvas rect' });
+        }
       }
     } else {
       selTraceSelection('preset.click-select-via-drag-up', {
@@ -1956,6 +2018,8 @@
       label: presetDrag.label || 'Preset',
       count: presetDrag.presetUuids.length,
       moveMode: presetDrag.moveMode,
+      /** Empty canvas drop creates a new bank (C15); bank target uses copy/move. */
+      createBankOnDrop: presetDropTarget === null,
     };
   });
 
@@ -2489,6 +2553,7 @@
               ? dockHover.draggedHighlightEdge
               : null}
         {#if variant === 'lite'}
+          {@const showSlots = bankShowsAttachSlots(bank.uuid)}
           <BankCardLite
             {bank}
             displayX={display.x}
@@ -2497,6 +2562,10 @@
             selected={selectedBankUuidSet.has(bank.uuid)}
             userPositioned={$userPositionedUuids.has(bank.uuid)}
             suppressNameTooltip={presetDrag?.active === true}
+            showAttachSlots={showSlots}
+            activeAttachCorridors={
+              showSlots ? bankActiveAttachCorridors(bank.uuid) : null
+            }
             dockEdgeHighlight={dockEdge}
             dragging={bankDragGrab?.uuid === bank.uuid}
             reduceSelectionGlow={bankDragActive}
@@ -2505,6 +2574,7 @@
             onbankcontextmenu={handleBankContextMenu}
           />
         {:else}
+          {@const showSlots = bankShowsAttachSlots(bank.uuid)}
           <BankCard
             {bank}
             displayX={display.x}
@@ -2512,7 +2582,10 @@
             {index}
             selected={selectedBankUuidSet.has(bank.uuid)}
             userPositioned={$userPositionedUuids.has(bank.uuid)}
-            showAttachSlots={bankShowsAttachSlots(bank.uuid)}
+            showAttachSlots={showSlots}
+            activeAttachCorridors={
+              showSlots ? bankActiveAttachCorridors(bank.uuid) : null
+            }
             dockEdgeHighlight={dockEdge}
             presetDropHighlight={
               presetDrag?.active === true &&
@@ -2547,11 +2620,30 @@
         log('preset', 'context menu duplicate', { count: presetContextMenu!.presetUuids.length });
       }}
       ondelete={() => {
-        deleteSelectedPresets();
-        log('preset', 'context menu delete', { count: presetContextMenu!.presetUuids.length });
+        void deleteSelectedPresets().then((ok) => {
+          if (ok) {
+            log('preset', 'context menu delete', {
+              count: presetContextMenu!.presetUuids.length,
+            });
+          }
+        });
+      }}
+      onnewbank={() => {
+        const menu = presetContextMenu;
+        if (!menu) return;
+        const created = createBankFromPresets(menu.bankUuid, menu.presetUuids);
+        log('preset', 'context menu new bank from presets', {
+          count: menu.presetUuids.length,
+          ok: Boolean(created),
+          newBank: created?.uuid,
+        });
       }}
       onclose={closePresetContextMenu}
     />
+  {/if}
+
+  {#if bankInfoUuid}
+    <BankInfoDialog bankUuid={bankInfoUuid} onclose={() => (bankInfoUuid = null)} />
   {/if}
 
   {#if canvasContextMenu}
@@ -2563,6 +2655,7 @@
       showCreateBank={canvasContextMenu.showCreateBank}
       oncreatebank={handleCreateBankFromContextMenu}
       onrenamebank={handleRenameBankFromContextMenu}
+      onbankinfo={handleBankInfoFromContextMenu}
       onexportall={handleExportAllFromContextMenu}
       onexportselected={handleExportSelectedFromContextMenu}
       onexportselectedxml={handleExportSelectedXmlFromContextMenu}
@@ -2610,6 +2703,7 @@
       label={presetDragVisual.label}
       count={presetDragVisual.count}
       moveMode={presetDragVisual.moveMode}
+      createBankOnDrop={presetDragVisual.createBankOnDrop}
     />
   {/if}
 

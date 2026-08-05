@@ -35,6 +35,8 @@ export type BankContentPatch = {
   presetOrder: string[];
   selectedPreset: string;
   lastChangedTimestamp: number;
+  /** Bank-level attributes (Comment, import/export file metadata, …). */
+  attributes: Record<string, string>;
   /** Present when preset membership/content changed (move/copy/duplicate/field edits). */
   presets?: Preset[];
 };
@@ -67,13 +69,34 @@ export type BankStructureEntry = {
   layoutAfter: BankLayoutPatch[];
 };
 
+/**
+ * Document order of banks only (bank ID / #N renumber). UUID lists are full
+ * permutations of the session banks at record time.
+ */
+export type BankOrderEntry = {
+  kind: 'bank-order';
+  label: string;
+  beforeOrder: string[];
+  afterOrder: string[];
+};
+
 /** Extensible entry union — more kinds added as features land. */
-export type UndoEntry = BankLayoutEntry | PresetContentEntry | BankStructureEntry;
+export type UndoEntry =
+  | BankLayoutEntry
+  | PresetContentEntry
+  | BankStructureEntry
+  | BankOrderEntry;
 
 const past: UndoEntry[] = [];
 const future: UndoEntry[] = [];
 
 let historySuspended = false;
+
+/**
+ * When false (Live connected), do not record local deltas — the C15 owns undo.
+ * Offline path keeps this true.
+ */
+let localHistoryEnabled = true;
 
 type OpenGroup = {
   label: string;
@@ -89,6 +112,23 @@ export const canRedo = writable(false);
 function syncFlags(): void {
   canUndo.set(past.length > 0);
   canRedo.set(future.length > 0);
+}
+
+/**
+ * Disable local history while Live (device is authority).
+ * Clearing on disable avoids a stale offline stack after reconnect.
+ */
+export function setLocalHistoryEnabled(enabled: boolean): void {
+  localHistoryEnabled = enabled;
+  if (!enabled) {
+    clearHistory();
+  } else {
+    syncFlags();
+  }
+}
+
+export function isLocalHistoryEnabled(): boolean {
+  return localHistoryEnabled;
 }
 
 function commitBanksInternal(list: Bank[]): void {
@@ -181,6 +221,7 @@ export function captureBankContent(
       presetOrder: [...bank.presetOrder],
       selectedPreset: bank.selectedPreset,
       lastChangedTimestamp: bank.lastChangedTimestamp,
+      attributes: { ...bank.attributes },
     };
     if (includePresets) {
       patch.presets = clonePresets(bank.presets);
@@ -249,6 +290,19 @@ function presetsEqual(a: readonly Preset[] | undefined, b: readonly Preset[] | u
   return true;
 }
 
+function attributesEqual(
+  a: Record<string, string>,
+  b: Record<string, string>,
+): boolean {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const key of aKeys) {
+    if (a[key] !== b[key]) return false;
+  }
+  return true;
+}
+
 function contentPatchesEqual(a: BankContentPatch, b: BankContentPatch): boolean {
   return (
     a.uuid === b.uuid &&
@@ -256,6 +310,7 @@ function contentPatchesEqual(a: BankContentPatch, b: BankContentPatch): boolean 
     a.selectedPreset === b.selectedPreset &&
     a.lastChangedTimestamp === b.lastChangedTimestamp &&
     stringArraysEqual(a.presetOrder, b.presetOrder) &&
+    attributesEqual(a.attributes, b.attributes) &&
     presetsEqual(a.presets, b.presets)
   );
 }
@@ -272,7 +327,7 @@ function contentMapsEqual(before: BankContentPatch[], after: BankContentPatch[])
 
 function pushEntry(entry: UndoEntry): void {
   // Layout groups coalesce layout only; other entry kinds may still record.
-  if (historySuspended) return;
+  if (!localHistoryEnabled || historySuspended) return;
   if (openGroup && entry.kind === 'bank-layout') return;
 
   past.push(entry);
@@ -292,7 +347,7 @@ export function recordBankLayoutChange(
   before: BankLayoutPatch[],
   after: BankLayoutPatch[],
 ): void {
-  if (historySuspended || openGroup) return;
+  if (!localHistoryEnabled || historySuspended || openGroup) return;
   if (before.length === 0 && after.length === 0) return;
   if (layoutMapsEqual(before, after)) return;
 
@@ -307,11 +362,37 @@ export function recordPresetContentChange(
   before: BankContentPatch[],
   after: BankContentPatch[],
 ): void {
-  if (historySuspended) return;
+  if (!localHistoryEnabled || historySuspended) return;
   if (before.length === 0 && after.length === 0) return;
   if (contentMapsEqual(before, after)) return;
 
   pushEntry({ kind: 'preset-content', label, before, after });
+}
+
+/**
+ * Record a bank document-order change (renumber IDs / #N).
+ * No-ops when orders are equal or incomplete.
+ */
+export function recordBankOrderChange(
+  label: string,
+  beforeOrder: readonly string[],
+  afterOrder: readonly string[],
+): void {
+  if (!localHistoryEnabled || historySuspended) return;
+  if (beforeOrder.length === 0 || beforeOrder.length !== afterOrder.length) return;
+  if (
+    beforeOrder.length === afterOrder.length &&
+    beforeOrder.every((u, i) => u === afterOrder[i])
+  ) {
+    return;
+  }
+
+  pushEntry({
+    kind: 'bank-order',
+    label,
+    beforeOrder: [...beforeOrder],
+    afterOrder: [...afterOrder],
+  });
 }
 
 /**
@@ -322,7 +403,7 @@ export function recordBankStructureFromLists(
   beforeList: readonly Bank[],
   afterList: readonly Bank[],
 ): void {
-  if (historySuspended) return;
+  if (!localHistoryEnabled || historySuspended) return;
 
   const afterByUuid = new Map(afterList.map((b) => [b.uuid, b]));
   const beforeByUuid = new Map(beforeList.map((b) => [b.uuid, b]));
@@ -379,7 +460,7 @@ export function recordLayoutAround(
   uuids: readonly string[],
   mutate: () => void,
 ): void {
-  if (historySuspended || openGroup) {
+  if (!localHistoryEnabled || historySuspended || openGroup) {
     mutate();
     return;
   }
@@ -399,7 +480,7 @@ export function recordPresetContentAround(
   includePresets: boolean,
   mutate: () => void,
 ): void {
-  if (historySuspended) {
+  if (!localHistoryEnabled || historySuspended) {
     mutate();
     return;
   }
@@ -415,7 +496,7 @@ export function recordPresetContentAround(
  * Nested begins are ignored while a group is already open.
  */
 export function beginUndoGroup(label: string, bankUuids: readonly string[]): void {
-  if (historySuspended) return;
+  if (!localHistoryEnabled || historySuspended) return;
   if (openGroup) return;
 
   const uuids = [...new Set(bankUuids)];
@@ -452,7 +533,7 @@ export function endUndoGroup(): boolean {
   const { label, uuids, before } = openGroup;
   openGroup = null;
 
-  if (historySuspended) return false;
+  if (!localHistoryEnabled || historySuspended) return false;
 
   const after = captureBankLayoutFromStore(uuids);
   if (layoutMapsEqual(before, after)) return false;
@@ -512,10 +593,11 @@ function applyContentPatches(patches: BankContentPatch[]): void {
     const orderSame = stringArraysEqual(bank.presetOrder, p.presetOrder);
     const selectedSame = bank.selectedPreset === p.selectedPreset;
     const tsSame = bank.lastChangedTimestamp === p.lastChangedTimestamp;
+    const attrsSame = attributesEqual(bank.attributes, p.attributes);
     const presetsSame =
       p.presets === undefined ? true : presetsEqual(bank.presets, p.presets);
 
-    if (nameSame && orderSame && selectedSame && tsSame && presetsSame) {
+    if (nameSame && orderSame && selectedSame && tsSame && attrsSame && presetsSame) {
       return bank;
     }
 
@@ -526,6 +608,7 @@ function applyContentPatches(patches: BankContentPatch[]): void {
       presetOrder: [...p.presetOrder],
       selectedPreset: p.selectedPreset,
       lastChangedTimestamp: p.lastChangedTimestamp,
+      attributes: { ...p.attributes },
       ...(p.presets !== undefined ? { presets: clonePresets(p.presets) } : {}),
     };
   });
@@ -579,6 +662,35 @@ function applyStructureEntry(entry: BankStructureEntry, direction: 'undo' | 'red
   commitBanksInternal(list);
 }
 
+/**
+ * Reorder the current bank list to match a full UUID permutation.
+ * Banks missing from the order are appended in their current relative order
+ * (defensive if the session changed since the undo entry was recorded).
+ */
+function applyBankOrder(order: readonly string[]): void {
+  const list = getBanksSnapshot();
+  if (list.length === 0 || order.length === 0) return;
+
+  const byUuid = new Map(list.map((bank) => [bank.uuid, bank]));
+  const next: Bank[] = [];
+  const seen = new Set<string>();
+
+  for (const uuid of order) {
+    const bank = byUuid.get(uuid);
+    if (!bank || seen.has(uuid)) continue;
+    next.push(bank);
+    seen.add(uuid);
+  }
+  for (const bank of list) {
+    if (!seen.has(bank.uuid)) next.push(bank);
+  }
+
+  if (next.length === list.length && next.every((b, i) => b.uuid === list[i]!.uuid)) {
+    return;
+  }
+  commitBanksInternal(next);
+}
+
 function applyEntry(entry: UndoEntry, direction: 'undo' | 'redo'): void {
   switch (entry.kind) {
     case 'bank-layout':
@@ -590,11 +702,14 @@ function applyEntry(entry: UndoEntry, direction: 'undo' | 'redo'): void {
     case 'bank-structure':
       applyStructureEntry(entry, direction);
       break;
+    case 'bank-order':
+      applyBankOrder(direction === 'undo' ? entry.beforeOrder : entry.afterOrder);
+      break;
   }
 }
 
 export function undo(): boolean {
-  if (historySuspended || openGroup) return false;
+  if (!localHistoryEnabled || historySuspended || openGroup) return false;
   const entry = past.pop();
   if (!entry) {
     syncFlags();
@@ -608,7 +723,7 @@ export function undo(): boolean {
 }
 
 export function redo(): boolean {
-  if (historySuspended || openGroup) return false;
+  if (!localHistoryEnabled || historySuspended || openGroup) return false;
   const entry = future.pop();
   if (!entry) {
     syncFlags();

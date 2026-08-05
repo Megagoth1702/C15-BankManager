@@ -36,6 +36,7 @@
   let showSynthZone = $state(true);
   let sortByCreationDate = $state(false);
   let groupsExpanded = $state(false);
+  let failedExpanded = $state(true);
 
   $effect(() => {
     if (open && hasExistingBanks) {
@@ -93,17 +94,46 @@
         {:else if scanResult}
           <div class="mb-4 rounded border border-c15-border bg-c15-surface-raised px-3 py-2">
             <p class="text-sm font-medium text-c15-text">
-              {scanResult.totalFiles} files · {scanResult.groups.length} folders · {scanResult.totalPresets.toLocaleString()} presets
+              {scanResult.okFiles.length} compatible
+              {#if scanResult.errorCount > 0}
+                · <span class="text-amber-400">{scanResult.errorCount} skipped</span>
+              {/if}
+              · {scanResult.groups.length} folders · {scanResult.totalPresets.toLocaleString()} presets
             </p>
             <p class="text-xs text-c15-text-muted">
               {scanResult.totalBanks} banks from <span class="text-c15-accent">{scanResult.folderLabel}</span>
             </p>
-            {#if scanResult.errorCount > 0}
-              <p class="mt-1 text-xs text-amber-400">
-                {scanResult.errorCount} file{scanResult.errorCount === 1 ? '' : 's'} could not be parsed
-              </p>
-            {/if}
+            <p class="mt-1 text-[10px] text-c15-text-muted">
+              Only .xml / .nlbackup bank files are imported. Other files are ignored by the picker.
+            </p>
           </div>
+
+          {#if scanResult.failedFiles.length > 0}
+            <button
+              type="button"
+              class="mb-2 flex w-full items-center justify-between rounded border border-amber-500/40 px-3 py-2 text-left text-xs text-amber-300 hover:border-amber-400"
+              onclick={() => (failedExpanded = !failedExpanded)}
+            >
+              <span>
+                Incompatible / unreadable ({scanResult.failedFiles.length}) — not imported
+              </span>
+              <span>{failedExpanded ? '▲' : '▼'}</span>
+            </button>
+            {#if failedExpanded}
+              <ul class="mb-4 max-h-36 space-y-1.5 overflow-y-auto rounded border border-amber-500/20 bg-amber-950/20 px-3 py-2 text-xs">
+                {#each scanResult.failedFiles as failed (failed.relativePath)}
+                  <li class="border-b border-c15-border/40 pb-1.5 last:border-0 last:pb-0">
+                    <div class="truncate font-medium text-c15-text" title={failed.relativePath}>
+                      {failed.relativePath}
+                    </div>
+                    <div class="mt-0.5 text-[10px] text-amber-200/90 break-words">
+                      {failed.reason}
+                    </div>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          {/if}
 
           <button
             type="button"

@@ -9,6 +9,7 @@
     selectBank,
     selectPreset,
   } from '../lib/model/bankStore';
+  import { buildBankForest, flattenBankForest } from '../lib/model/bankTree';
   import {
     buildPresetSearchIndex,
     formatPresetSearchLabel,
@@ -16,7 +17,11 @@
     type PresetSearchEntry,
     type SortBy,
   } from '../lib/search/presetSearch';
-  import { presetSearchQuery, presetSearchState } from '../lib/search/searchState';
+  import {
+    pendingFocusPresetSearch,
+    presetSearchQuery,
+    presetSearchState,
+  } from '../lib/search/searchState';
   import { PRESET_COLOR_NAMES } from '../lib/xml/presetAttributes';
   import PresetBrowseList from './PresetBrowseList.svelte';
   import PresetSearchMatchBadges from './PresetSearchMatchBadges.svelte';
@@ -24,6 +29,7 @@
   import { focusRenameInput } from '../lib/ui/focusRenameInput';
 
   let showSettings = $state(true);
+  let showBankScope = $state(false);
   let inputFocused = $state(false);
   let dropdownFocused = $state(false);
   let highlightIndex = $state(0);
@@ -47,6 +53,121 @@
     performPresetSearch(index, '', $presetSearchState).map((result) => result.entry),
   );
 
+  /** Banks in sidebar tree order for scope multi-select. */
+  const banksInOrder = $derived(
+    flattenBankForest(buildBankForest([...$banks])).map((node, i) => ({
+      uuid: node.bank.uuid,
+      name: node.bank.name,
+      order: i + 1,
+    })),
+  );
+
+  const bankScopeLabel = $derived.by(() => {
+    const selected = $presetSearchState.bankUuids;
+    if (selected.length === 0) return 'All Banks';
+    if (selected.length === 1 && selected[0] === '__none__') return 'No banks';
+    if (selected.length === 1) {
+      const hit = banksInOrder.find((b) => b.uuid === selected[0]);
+      return hit ? hit.name : '1 bank';
+    }
+    return `${selected.length} banks`;
+  });
+
+  const isAllBanksScope = $derived($presetSearchState.bankUuids.length === 0);
+
+  /** Anchor for Shift+click range select in the bank-scope list. */
+  let lastBankScopeAnchorUuid = $state<string | null>(null);
+
+  function setAllBanksScope(): void {
+    lastBankScopeAnchorUuid = null;
+    presetSearchState.update((s) => ({ ...s, bankUuids: [] }));
+  }
+
+  function setNoBanksScope(): void {
+    // Sentinel: non-empty list that matches nothing → empty results (C15 "none").
+    // Use a never-present uuid so length > 0.
+    lastBankScopeAnchorUuid = null;
+    presetSearchState.update((s) => ({
+      ...s,
+      bankUuids: ['__none__'],
+    }));
+  }
+
+  function bankScopeIndex(uuid: string): number {
+    return banksInOrder.findIndex((b) => b.uuid === uuid);
+  }
+
+  function normalizeBankScopeSelection(uuids: string[]): string[] {
+    if (uuids.length === 0) return [];
+    if (uuids.length === banksInOrder.length) return [];
+    return uuids;
+  }
+
+  function toggleBankScope(uuid: string): void {
+    presetSearchState.update((s) => {
+      // Leaving "all" mode: start from empty selection then add this bank.
+      if (s.bankUuids.length === 0) {
+        return { ...s, bankUuids: [uuid] };
+      }
+      // Leaving "none" sentinel.
+      if (s.bankUuids.length === 1 && s.bankUuids[0] === '__none__') {
+        return { ...s, bankUuids: [uuid] };
+      }
+      const has = s.bankUuids.includes(uuid);
+      const next = has
+        ? s.bankUuids.filter((id) => id !== uuid)
+        : [...s.bankUuids, uuid];
+      return { ...s, bankUuids: normalizeBankScopeSelection(next) };
+    });
+  }
+
+  /** Select inclusive range from anchor → target (adds to current multi-select). */
+  function selectBankScopeRange(fromUuid: string, toUuid: string): void {
+    const from = bankScopeIndex(fromUuid);
+    const to = bankScopeIndex(toUuid);
+    if (from < 0 || to < 0) {
+      toggleBankScope(toUuid);
+      lastBankScopeAnchorUuid = toUuid;
+      return;
+    }
+    const lo = Math.min(from, to);
+    const hi = Math.max(from, to);
+    const rangeUuids = banksInOrder.slice(lo, hi + 1).map((b) => b.uuid);
+
+    presetSearchState.update((s) => {
+      let base: string[];
+      if (s.bankUuids.length === 0) {
+        // "All" → range becomes the explicit selection (not every bank).
+        base = [];
+      } else if (s.bankUuids.length === 1 && s.bankUuids[0] === '__none__') {
+        base = [];
+      } else {
+        base = [...s.bankUuids];
+      }
+      const set = new Set(base);
+      for (const id of rangeUuids) set.add(id);
+      return { ...s, bankUuids: normalizeBankScopeSelection([...set]) };
+    });
+  }
+
+  function onBankScopeClick(uuid: string, event: MouseEvent): void {
+    if (event.shiftKey && lastBankScopeAnchorUuid) {
+      event.preventDefault();
+      selectBankScopeRange(lastBankScopeAnchorUuid, uuid);
+      // Keep original anchor so further Shift+clicks extend from the same start.
+      return;
+    }
+    toggleBankScope(uuid);
+    lastBankScopeAnchorUuid = uuid;
+  }
+
+  function isBankInScope(uuid: string): boolean {
+    const selected = $presetSearchState.bankUuids;
+    if (selected.length === 0) return true;
+    if (selected.length === 1 && selected[0] === '__none__') return false;
+    return selected.includes(uuid);
+  }
+
   const showDropdown = $derived(
     $presetSearchQuery.trim().length > 0 && (inputFocused || dropdownFocused),
   );
@@ -55,6 +176,19 @@
     $presetSearchQuery;
     $presetSearchState;
     highlightIndex = 0;
+  });
+
+  /** Sidebar collapsed → search icon: expand + Presets tab then land focus here. */
+  $effect(() => {
+    if (!$pendingFocusPresetSearch) return;
+    void tick()
+      .then(() => tick())
+      .then(() => {
+        if (!$pendingFocusPresetSearch) return;
+        searchInput?.focus();
+        inputFocused = true;
+        pendingFocusPresetSearch.set(false);
+      });
   });
 
   $effect(() => {
@@ -302,6 +436,68 @@
         </div>
       </div>
     {/if}
+
+    <div class="relative mb-2">
+      <button
+        type="button"
+        class="flex w-full items-center justify-between rounded border px-2 py-1 text-left text-[10px] transition-colors
+          {isAllBanksScope
+          ? 'border-c15-border text-c15-text-muted hover:border-c15-accent'
+          : 'border-c15-accent bg-c15-accent/10 text-c15-accent'}"
+        title="Limit search and browse list to selected banks"
+        onclick={() => (showBankScope = !showBankScope)}
+      >
+        <span class="min-w-0 truncate">{bankScopeLabel}</span>
+        <span class="shrink-0 opacity-70">{showBankScope ? '▲' : '▼'}</span>
+      </button>
+      {#if showBankScope}
+        <div
+          class="absolute left-0 right-0 z-20 mt-1 flex max-h-48 flex-col rounded border border-c15-border bg-c15-surface-raised p-2 shadow-lg"
+        >
+          <div class="mb-1.5 flex shrink-0 gap-1">
+            <button
+              type="button"
+              class="rounded border border-c15-border px-1.5 py-0.5 text-[10px] text-c15-text hover:border-c15-accent"
+              onclick={setAllBanksScope}
+            >
+              All
+            </button>
+            <button
+              type="button"
+              class="rounded border border-c15-border px-1.5 py-0.5 text-[10px] text-c15-text hover:border-c15-accent"
+              onclick={setNoBanksScope}
+            >
+              None
+            </button>
+          </div>
+          {#if banksInOrder.length === 0}
+            <p class="text-[10px] text-c15-text-muted">No banks loaded</p>
+          {:else}
+            <ul class="min-h-0 flex-1 overflow-y-auto flex flex-col select-none">
+              {#each banksInOrder as bank (bank.uuid)}
+                {@const inScope = isBankInScope(bank.uuid)}
+                <li class="-mt-px first:mt-0">
+                  <button
+                    type="button"
+                    class="block w-full min-w-0 truncate border px-1.5 py-px text-left text-[10px] leading-none transition-colors
+                      {inScope
+                      ? 'relative z-[1] border-c15-accent bg-c15-accent/10 text-c15-text'
+                      : 'border-transparent text-c15-text-muted hover:z-[1] hover:border-c15-border hover:bg-c15-surface hover:text-c15-text'}"
+                    title={inScope
+                      ? `${bank.name} (in search) · Shift+click for range`
+                      : `${bank.name} (click to include) · Shift+click for range`}
+                    aria-pressed={inScope}
+                    onclick={(e) => onBankScopeClick(bank.uuid, e)}
+                  >
+                    {String(bank.order).padStart(2, '0')} · {bank.name}
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+      {/if}
+    </div>
 
     <div class="mb-2 flex items-center gap-1 text-[10px]">
       <button

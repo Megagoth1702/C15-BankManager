@@ -5,8 +5,11 @@
   import Canvas from './components/Canvas.svelte';
   import StatusBar from './components/StatusBar.svelte';
   import DebugLogPanel from './components/DebugLogPanel.svelte';
+  import LiveImportOverlay from './components/LiveImportOverlay.svelte';
+  import AppDialogHost from './components/AppDialogHost.svelte';
   import { isAppDebugEnabled } from './lib/debug/debugFlags';
   import { shouldIgnoreKeyboardShortcut } from './lib/keyboard';
+  import { getLiveImportBusy } from './lib/live/liveImportJob';
   import {
     bankMeta,
     cancelRenameBank,
@@ -14,6 +17,7 @@
     createBank,
     handleDeleteKeyPress,
     getPrimarySelectedUuid,
+    loadSelectedPreset,
     selectBank,
     sessionDirty,
     startRenameBank,
@@ -22,6 +26,20 @@
 
   function onGlobalKeyDown(event: KeyboardEvent): void {
     if (shouldIgnoreKeyboardShortcut(event.target)) return;
+
+    // Freeze editing while the C15 import job is running (Option B cold UI).
+    if (getLiveImportBusy()) {
+      if (
+        event.code === 'Delete' ||
+        event.code === 'Backspace' ||
+        event.code === 'F2' ||
+        event.code === 'Enter' ||
+        event.code === 'KeyN'
+      ) {
+        event.preventDefault();
+      }
+      return;
+    }
 
     if (event.code === 'Escape') {
       if ($bankMeta.renamingPreset) {
@@ -63,13 +81,26 @@
       return;
     }
 
+    // NonMaps: Enter loads the selected preset into the edit buffer (Live).
+    if (
+      event.code === 'Enter' &&
+      !$bankMeta.renamingPreset &&
+      !$bankMeta.renamingBankUuid &&
+      $bankMeta.deleteFocus === 'preset' &&
+      $bankMeta.selectedPresetUuids.length > 0
+    ) {
+      event.preventDefault();
+      loadSelectedPreset();
+      return;
+    }
+
     if (event.code === 'Delete' || event.code === 'Backspace') {
       const hasTarget =
         ($bankMeta.deleteFocus === 'preset' && $bankMeta.selectedPresetUuids.length > 0) ||
         ($bankMeta.deleteFocus === 'bank' && $bankMeta.selectedBankUuids.length > 0);
       if (hasTarget) {
         event.preventDefault();
-        handleDeleteKeyPress();
+        void handleDeleteKeyPress();
       }
       return;
     }
@@ -105,3 +136,6 @@
     <DebugLogPanel />
   {/if}
 </div>
+
+<LiveImportOverlay />
+<AppDialogHost />
