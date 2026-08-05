@@ -45,6 +45,20 @@ jobs:
         run: |
           test -f release-artifacts/C15-BankManager-local.zip
           test -f release-artifacts/C15-BankManager-local/app/index.html
+          # Must be a real ZIP (PK..), not GNU tar misnamed as .zip
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('release-artifacts/C15-BankManager-local.zip')
+          magic = p.read_bytes()[:4]
+          if magic[:2] != b'PK':
+              raise SystemExit(f'ERROR: not a ZIP file (magic={magic!r})')
+          print('ZIP magic OK:', magic)
+          PY
+          # Round-trip extract with unzip (fails on tar-disguised-as-zip)
+          rm -rf /tmp/c15bm-zip-check
+          mkdir -p /tmp/c15bm-zip-check
+          unzip -q -o release-artifacts/C15-BankManager-local.zip -d /tmp/c15bm-zip-check
+          test -f /tmp/c15bm-zip-check/C15-BankManager-local/app/index.html
           # Local pack must use relative asset URLs (not Pages base)
           if grep -q '/C15-BankManager/' release-artifacts/C15-BankManager-local/app/index.html; then
             echo 'ERROR: local pack still has Pages base path'

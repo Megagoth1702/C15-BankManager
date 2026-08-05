@@ -129,16 +129,39 @@ function copyDir(src, dest) {
   }
 }
 
+/**
+ * Extract a real ZIP (PK…). Prefer tools that understand ZIP format.
+ * Note: GNU tar cannot create or extract ZIP; only BSD tar (Windows/macOS) can.
+ */
 function extractZip(zipPath, destDir) {
   fs.mkdirSync(destDir, { recursive: true });
-  // Windows 10+ and macOS/Linux ship tar that can extract zip
-  const r = spawnSync('tar', ['-xf', zipPath, '-C', destDir], {
-    encoding: 'utf8',
-    windowsHide: true,
-  });
-  if (r.status !== 0) {
-    throw new Error(`tar extract failed: ${r.stderr || r.stdout || r.status}`);
+  const errors = [];
+
+  const tryRun = (label, cmd, args, opts = {}) => {
+    const r = spawnSync(cmd, args, {
+      encoding: 'utf8',
+      windowsHide: true,
+      ...opts,
+    });
+    if (r.status === 0) return true;
+    const detail = (r.stderr || r.stdout || `status ${r.status}`).trim();
+    errors.push(`${label}: ${detail || 'failed'}`);
+    return false;
+  };
+
+  // Info-ZIP / macOS unzip — correct for standard ZIP on Unix
+  if (tryRun('unzip', 'unzip', ['-q', '-o', zipPath, '-d', destDir])) return;
+
+  // Windows built-in (real ZIP only)
+  if (process.platform === 'win32') {
+    const ps = `Expand-Archive -LiteralPath '${zipPath.replace(/'/g, "''")}' -DestinationPath '${destDir.replace(/'/g, "''")}' -Force`;
+    if (tryRun('Expand-Archive', 'powershell', ['-NoProfile', '-Command', ps])) return;
   }
+
+  // BSD tar (Windows 10+, macOS) extracts ZIP; GNU tar usually does not
+  if (tryRun('tar', 'tar', ['-xf', zipPath, '-C', destDir])) return;
+
+  throw new Error(`zip extract failed: ${errors.join(' | ')}`);
 }
 
 /**
