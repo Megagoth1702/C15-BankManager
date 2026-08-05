@@ -3,7 +3,7 @@
  * Implementation lives in focused modules; this file re-exports and owns
  * bank create/delete/attach/move/preset content mutations.
  */
-import { derived, get } from 'svelte/store';
+import { get } from 'svelte/store';
 import {
   logPositionChanges,
   logPositionSnapshot,
@@ -46,12 +46,7 @@ import {
   isBankSelected,
   setStoreError,
 } from './documentCommit';
-import { confirmAppDialog } from '../ui/appDialog';
 import { deletePresetsFromBank } from './presetDelete';
-import {
-  applyBankAttribute,
-  applyBankComment,
-} from './bankAttributes';
 import {
   applyPresetColorBatch,
   applyPresetComment,
@@ -73,49 +68,19 @@ import {
   countAttachedBanks,
 } from './positioning';
 import {
-  bankOrderMatches,
-  reorderBanksByUuidOrder,
-} from './bankOrder';
-import {
   beginUndoGroup,
   captureBankContent,
   clearHistory,
   endUndoGroup,
   expandOpenUndoGroupUuids,
   isUndoGroupOpen,
-  recordBankOrderChange,
   recordBankStructureFromLists,
   recordLayoutAround,
   recordPresetContentChange,
   undo as undoHistory,
   redo as redoHistory,
-  canUndo as localCanUndo,
-  canRedo as localCanRedo,
 } from './undoHistory';
 import { findByUuid } from '../uuid/uuidKey';
-import { deviceUndoState } from '../live/liveDeviceUndo';
-import { liveMode } from '../live/liveMode';
-import {
-  dockParamsFromAttach,
-  isLivePushActive,
-  pushBankPositions,
-  pushDeleteBank,
-  pushDeletePresets,
-  pushDockBanks,
-  pushCreateBankFromPresets,
-  pushDropPresetsAt,
-  pushDuplicatePresets,
-  pushMovePresetsTo,
-  pushNewBank,
-  pushPresetColor,
-  pushPresetComment,
-  pushRedo,
-  pushRenameBank,
-  pushRenamePreset,
-  pushSetPosition,
-  pushUndockBank,
-  pushUndo,
-} from '../live/livePush';
 
 export type { ImportMode, InteractionSurface } from './bankState';
 export type { SelectMode } from './selectionCommands';
@@ -125,6 +90,8 @@ export type {
 } from './exportSession';
 
 export {
+  canUndo,
+  canRedo,
   beginUndoGroup,
   endUndoGroup,
   expandOpenUndoGroupUuids,
@@ -132,43 +99,6 @@ export {
   clearHistory,
   isUndoGroupOpen,
 } from './undoHistory';
-
-/** True when Live library is ready — Undo/Redo target the C15, not local history. */
-function isLiveUndoAuthority(): boolean {
-  const m = get(liveMode);
-  return (
-    (m.connection === 'live' || m.connection === 'reconnecting') && m.libraryReady
-  );
-}
-
-/**
- * Toolbar enablement: offline = local stack; Live = device `<undo>` section tips.
- */
-export const canUndo = derived(
-  [localCanUndo, liveMode, deviceUndoState],
-  ([$local, $live, $dev]) => {
-    if (
-      ($live.connection === 'live' || $live.connection === 'reconnecting') &&
-      $live.libraryReady
-    ) {
-      return $dev.canUndo;
-    }
-    return $local;
-  },
-);
-
-export const canRedo = derived(
-  [localCanRedo, liveMode, deviceUndoState],
-  ([$local, $live, $dev]) => {
-    if (
-      ($live.connection === 'live' || $live.connection === 'reconnecting') &&
-      $live.libraryReady
-    ) {
-      return $dev.canRedo;
-    }
-    return $local;
-  },
-);
 
 export {
   appSettings,
@@ -200,7 +130,6 @@ export {
   selectBankRange,
   selectPreset,
   selectPresetsBatch,
-  loadSelectedPreset,
   startRenameBank,
   cancelRenameBank,
   startRenamePreset,
@@ -226,30 +155,15 @@ export {
   importFolderFiles,
 } from './importSession';
 
-/**
- * Undo: while Live + library ready, send `/undo/undo` to the C15 (device stack).
- * Offline: apply local delta history. Never "undo locally then push result" in Live.
- */
 export function undo(): boolean {
-  if (isLiveUndoAuthority()) {
-    if (!isLivePushActive()) return false;
-    return pushUndo();
-  }
   return undoHistory();
 }
 
-/**
- * Redo: while Live, `/undo/redo` on the C15; offline uses local future stack.
- */
 export function redo(): boolean {
-  if (isLiveUndoAuthority()) {
-    if (!isLivePushActive()) return false;
-    return pushRedo();
-  }
   return redoHistory();
 }
 
-export async function deleteSelectedPresets(): Promise<boolean> {
+export function deleteSelectedPresets(): boolean {
   const meta = get(bankMeta);
   const bankUuid = meta.presetSelectionBankUuid;
   const uuids = meta.selectedPresetUuids;
@@ -266,13 +180,7 @@ export async function deleteSelectedPresets(): Promise<boolean> {
     uuids.length === 1
       ? `Delete preset "${names[0] ?? 'selected'}"? You can undo with the Undo button.`
       : `Delete ${uuids.length} selected presets? You can undo with the Undo button.`;
-  const proceed = await confirmAppDialog({
-    title: uuids.length === 1 ? 'Delete preset' : 'Delete presets',
-    message,
-    confirmLabel: 'Delete',
-    danger: true,
-  });
-  if (!proceed) return false;
+  if (!window.confirm(message)) return false;
 
   const before = captureBankContent(list, [bankUuid], true);
   const result = deletePresetsFromBank(list, bankUuid, uuids);
@@ -292,7 +200,6 @@ export async function deleteSelectedPresets(): Promise<boolean> {
     ...clearPresetSelectionFields(m),
     deleteFocus: m.selectedBankUuids.length > 0 ? 'bank' : null,
   }));
-  pushDeletePresets(result.deleted);
   log('store', 'deleteSelectedPresets', { bankUuid, count: result.deleted.length });
   return true;
 }
@@ -305,15 +212,6 @@ export function duplicateSelectedPresets(): boolean {
   if (!bankUuid || uuids.length === 0) return false;
 
   const list = getBanksSnapshot();
-  const bank = findByUuid(list, bankUuid);
-  // Device insert order uses bank order, not selection order.
-  const ordered = bank
-    ? bank.presetOrder.filter((u) =>
-        uuids.some((sel) => sel.toLowerCase() === u.toLowerCase()),
-      )
-    : [...uuids];
-  const afterUuid = ordered[ordered.length - 1] ?? uuids[uuids.length - 1]!;
-
   const before = captureBankContent(list, [bankUuid], true);
   const result = duplicatePresetsInBank(list, bankUuid, uuids);
   if (!result.ok || !result.banks) {
@@ -331,8 +229,6 @@ export function duplicateSelectedPresets(): boolean {
     presetSelectionAnchorUuid: result.moved[result.moved.length - 1] ?? null,
     presetSelectionBaseUuids: result.moved,
   }));
-  // Device mints new UUIDs; Phase 2 document echo replaces optimistic clones.
-  pushDuplicatePresets(ordered, afterUuid);
   log('store', 'duplicateSelectedPresets', { bankUuid, count: result.moved.length });
   return true;
 }
@@ -379,18 +275,7 @@ export function copyPresetsToBank(
   insertIndex?: number,
 ): boolean {
   const list = getBanksSnapshot();
-  const target = findByUuid(list, targetBankUuid);
-  const at = insertIndex ?? target?.presetOrder.length ?? 0;
-  const targetOrderBefore = target?.presetOrder ?? [];
-  // Preserve bank order for multi-drop CSV.
-  const source = findByUuid(list, sourceBankUuid);
-  const ordered = source
-    ? source.presetOrder.filter((u) =>
-        presetUuids.some((sel) => sel.toLowerCase() === u.toLowerCase()),
-      )
-    : [...presetUuids];
-
-  const ok = applyPresetDropResult(
+  return applyPresetDropResult(
     list,
     copyPresetsBetweenBanks(list, presetUuids, sourceBankUuid, targetBankUuid, insertIndex),
     [targetBankUuid],
@@ -400,11 +285,6 @@ export function copyPresetsToBank(
     'copy',
     'Copy presets',
   );
-  if (ok) {
-    // Device mints new UUIDs; document echo reconciles optimistic clones.
-    pushDropPresetsAt(ordered, targetBankUuid, targetOrderBefore, at);
-  }
-  return ok;
 }
 
 /** Move presets to another bank (UUIDs preserved; removed from source). */
@@ -415,17 +295,7 @@ export function movePresetsToBank(
   insertIndex?: number,
 ): boolean {
   const list = getBanksSnapshot();
-  const target = findByUuid(list, targetBankUuid);
-  const at = insertIndex ?? target?.presetOrder.length ?? 0;
-  const targetOrderBefore = target?.presetOrder ?? [];
-  const source = findByUuid(list, sourceBankUuid);
-  const ordered = source
-    ? source.presetOrder.filter((u) =>
-        presetUuids.some((sel) => sel.toLowerCase() === u.toLowerCase()),
-      )
-    : [...presetUuids];
-
-  const ok = applyPresetDropResult(
+  return applyPresetDropResult(
     list,
     movePresetsBetweenBanks(list, presetUuids, sourceBankUuid, targetBankUuid, insertIndex),
     [sourceBankUuid, targetBankUuid],
@@ -435,10 +305,6 @@ export function movePresetsToBank(
     'move',
     'Move presets',
   );
-  if (ok) {
-    pushMovePresetsTo(ordered, targetBankUuid, targetOrderBefore, at);
-  }
-  return ok;
 }
 
 /** Reorder presets within one bank (same-bank drag-drop). */
@@ -448,36 +314,9 @@ export function reorderPresetsInBankStore(
   insertIndex: number,
 ): boolean {
   const list = getBanksSnapshot();
-  const bank = findByUuid(list, bankUuid);
-  const needles = new Set(presetUuids.map((u) => u.toLowerCase()));
-  const ordered = bank
-    ? bank.presetOrder.filter((u) => needles.has(u.toLowerCase()))
-    : [...presetUuids];
-  // drop-presets anchor is relative to remaining order (movers removed).
-  const orderWithout = bank
-    ? bank.presetOrder.filter((u) => !needles.has(u.toLowerCase()))
-    : [];
-  // Same adjust as reorderPresetsInBank so anchor matches local insert.
-  let adjusted = insertIndex;
-  if (bank) {
-    const limit = Math.min(insertIndex, bank.presetOrder.length);
-    for (let i = 0; i < limit; i++) {
-      if (needles.has(bank.presetOrder[i]!.toLowerCase())) adjusted--;
-    }
-    adjusted = Math.max(0, Math.min(adjusted, orderWithout.length));
-  }
-
-  const result = reorderPresetsInBank(list, bankUuid, presetUuids, insertIndex);
-  if (!result.ok || !result.banks) {
-    log('store', 'reorderPresets failed', { error: result.error });
-    return false;
-  }
-  // No-op reorder — skip history and device push.
-  if (result.banks === list) return true;
-
-  const ok = applyPresetDropResult(
+  return applyPresetDropResult(
     list,
-    result,
+    reorderPresetsInBank(list, bankUuid, presetUuids, insertIndex),
     [bankUuid],
     true, // pos + rawXml rewritten to match new order (C15 export)
     bankUuid,
@@ -485,10 +324,6 @@ export function reorderPresetsInBankStore(
     'reorder',
     'Reorder presets',
   );
-  if (ok) {
-    pushDropPresetsAt(ordered, bankUuid, orderWithout, adjusted);
-  }
-  return ok;
 }
 
 /** Sort all presets in a bank by name or creation/store time (context menu). */
@@ -519,44 +354,6 @@ export function sortPresetsInBankStore(
 }
 
 export type { PresetSortBy };
-
-/**
- * True when renumber is allowed: not connected / connecting to a C15.
- * (There is no device bank-order RPC; Live sessions must not diverge.)
- */
-function isOfflineForBankRenumber(): boolean {
-  const c = get(liveMode).connection;
-  return c === 'offline' || c === 'error';
-}
-
-/**
- * Set document bank order (bank ID / #N) to match `orderedUuids`.
- * Must be a full permutation of current banks. No-op when already matching.
- * Offline only (undoable). Refuses while Live / connecting / reconnecting.
- */
-export function renumberBanksToOrder(orderedUuids: readonly string[]): boolean {
-  if (!isOfflineForBankRenumber()) {
-    setStoreError('Renumber bank IDs is only available offline (not while Live).');
-    return false;
-  }
-
-  const list = getBanksSnapshot();
-  if (list.length === 0) return false;
-  if (bankOrderMatches(list, orderedUuids)) return true;
-
-  const next = reorderBanksByUuidOrder(list, orderedUuids);
-  if (!next || next === list) {
-    if (!next) setStoreError('Cannot renumber banks: order list does not match the session.');
-    return next === list;
-  }
-
-  const beforeOrder = list.map((b) => b.uuid);
-  const afterOrder = next.map((b) => b.uuid);
-  commitBanks(next);
-  recordBankOrderChange('Renumber bank IDs', beforeOrder, afterOrder);
-  log('store', 'renumberBanksToOrder', { count: next.length });
-  return true;
-}
 
 function defaultNewBankPosition(
   list: Bank[],
@@ -616,8 +413,6 @@ export function createBank(
   }));
 
   log('store', 'createBank', { name: bank.name, uuid: bank.uuid, x: bank.x, y: bank.y });
-  // Device mints its own bank UUID; Phase 2 document echo replaces the optimistic bank.
-  pushNewBank(bank.x, bank.y, bank.name);
   return bank;
 }
 
@@ -643,7 +438,6 @@ export function renameBank(uuid: string, name: string): boolean {
 
   bankMeta.update((m) => ({ ...m, renamingBankUuid: null, renameSurface: null, error: null }));
   log('store', 'renameBank', { uuid, name: trimmed });
-  pushRenameBank(uuid, trimmed);
   return true;
 }
 
@@ -663,7 +457,6 @@ export function renamePreset(bankUuid: string, presetUuid: string, name: string)
   commitBanks(updated);
   recordPresetContentChange('Rename preset', before, after);
   bankMeta.update((m) => ({ ...m, renamingPreset: null, renameSurface: null, error: null }));
-  pushRenamePreset(presetUuid, trimmed);
   log('store', 'renamePreset', { bankUuid, presetUuid, name: trimmed });
   return true;
 }
@@ -680,9 +473,6 @@ export function setPresetColor(
   const after = captureBankContent(updated, [bankUuid], true);
   commitBanks(updated);
   recordPresetContentChange('Change preset color', before, after);
-  for (const uuid of presetUuids) {
-    pushPresetColor(uuid, color);
-  }
   log('store', 'setPresetColor', { bankUuid, count: presetUuids.length, color });
   return true;
 }
@@ -699,120 +489,8 @@ export function setPresetComment(
   const after = captureBankContent(updated, [bankUuid], true);
   commitBanks(updated);
   recordPresetContentChange('Change preset comment', before, after);
-  pushPresetComment(presetUuid, comment);
   log('store', 'setPresetComment', { bankUuid, presetUuid });
   return true;
-}
-
-/** Set or clear a bank-level attribute (e.g. Comment). Empty value removes the key. */
-export function setBankAttribute(uuid: string, key: string, value: string): boolean {
-  const trimmedKey = key.trim();
-  if (!trimmedKey) return false;
-
-  const list = getBanksSnapshot();
-  if (!list.some((bank) => bank.uuid === uuid)) return false;
-
-  const before = captureBankContent(list, [uuid], false);
-  const updated = applyBankAttribute(list, uuid, trimmedKey, value);
-  if (!updated) return false;
-  const after = captureBankContent(updated, [uuid], false);
-  commitBanks(updated);
-  recordPresetContentChange('Change bank attribute', before, after);
-  log('store', 'setBankAttribute', { uuid, key: trimmedKey });
-  // Live: no dedicated bank-attribute RPC in offline mirror yet; document echo wins if device edits.
-  return true;
-}
-
-export function setBankComment(uuid: string, comment: string): boolean {
-  const list = getBanksSnapshot();
-  if (!list.some((bank) => bank.uuid === uuid)) return false;
-
-  const before = captureBankContent(list, [uuid], false);
-  const updated = applyBankComment(list, uuid, comment);
-  if (!updated) return false;
-  const after = captureBankContent(updated, [uuid], false);
-  commitBanks(updated);
-  recordPresetContentChange('Change bank comment', before, after);
-  log('store', 'setBankComment', { uuid });
-  return true;
-}
-
-/**
- * Create a free bank and copy selected presets into it (new UUIDs; source unchanged).
- * C15: drop presets on empty canvas (`create-new-bank-from-presets`) or context menu.
- *
- * @param options.x / options.y — bank origin in C15 units (drop position). When omitted,
- *   places the bank near the source (right offset), matching the context-menu path.
- */
-export function createBankFromPresets(
-  sourceBankUuid: string,
-  presetUuids: readonly string[],
-  options: { x?: number; y?: number } = {},
-): Bank | null {
-  const list = getBanksSnapshot();
-  const source = findByUuid(list, sourceBankUuid);
-  if (!source) {
-    setStoreError('Source bank not found.');
-    return null;
-  }
-  if (presetUuids.length === 0) {
-    setStoreError('No presets selected.');
-    return null;
-  }
-
-  // Preserve bank order for multi-drop CSV / new bank row order (C15 multi-selection order).
-  const ordered = source.presetOrder.filter((u) =>
-    presetUuids.some((sel) => sel.toLowerCase() === u.toLowerCase()),
-  );
-  if (ordered.length === 0) {
-    setStoreError('No presets selected.');
-    return null;
-  }
-
-  const name = nextDefaultBankName(list);
-  const x =
-    options.x !== undefined
-      ? snapToGrid(options.x)
-      : snapToGrid(source.x + horizontalAttachStep() * 2);
-  const y =
-    options.y !== undefined ? snapToGrid(options.y) : snapToGrid(source.y);
-  const empty = createEmptyBank(name, x, y);
-  const withBank = [...list, empty];
-
-  const result = copyPresetsBetweenBanks(
-    withBank,
-    ordered,
-    sourceBankUuid,
-    empty.uuid,
-  );
-  if (!result.ok || !result.banks) {
-    setStoreError(result.error ?? 'Could not copy presets to new bank.');
-    return null;
-  }
-
-  commitBanks(result.banks);
-  recordBankStructureFromLists('New bank from presets', list, result.banks);
-  bankMeta.update((m) => ({
-    ...clearPresetSelectionFields(m),
-    selectedBankUuids: [empty.uuid],
-    deleteFocus: 'bank',
-    renamingBankUuid: null,
-    error: null,
-  }));
-
-  log('store', 'createBankFromPresets', {
-    source: sourceBankUuid,
-    newBank: empty.uuid,
-    count: result.moved.length,
-    x: empty.x,
-    y: empty.y,
-  });
-
-  // Live: create-from-presets RPC (device mints bank + preset UUIDs; document echo
-  // reconciles). Offline: local copies already committed; push is a no-op.
-  pushCreateBankFromPresets(ordered, empty.x, empty.y);
-
-  return findByUuid(result.banks, empty.uuid) ?? empty;
 }
 
 function sortBanksForBatchAttach(uuids: string[], list: Bank[]): string[] {
@@ -828,13 +506,12 @@ function sortBanksForBatchAttach(uuids: string[], list: Bank[]): string[] {
 
 /**
  * Attach `child` to `parent` on the given face; snaps child to recommended position.
- * `skipLivePush` when the caller will send a more precise dock-banks RPC (edge + roles).
  */
 export function attachBank(
   childUuid: string,
   parentUuid: string,
   attachDirection: AttachDirection,
-  options: { preservePosition?: boolean; skipLivePush?: boolean } = {},
+  options: { preservePosition?: boolean } = {},
 ): boolean {
   const list = getBanksSnapshot();
   const check = canAttachBank(childUuid, parentUuid, attachDirection, list);
@@ -881,21 +558,6 @@ export function attachBank(
     x: pos.x,
     y: pos.y,
   });
-
-  if (!options.skipLivePush) {
-    const dock = dockParamsFromAttach(parentUuid, childUuid, attachDirection);
-    const after = findByUuid(getBanksSnapshot(), dock.draggedBank);
-    if (after) {
-      pushDockBanks({
-        droppedOntoBank: dock.droppedOntoBank,
-        draggedBank: dock.draggedBank,
-        droppedAt: dock.droppedAt,
-        x: after.x,
-        y: after.y,
-      });
-    }
-  }
-
   return true;
 }
 
@@ -906,27 +568,7 @@ export function dockBankAtEdge(
   dockEdge: DockEdge,
 ): boolean {
   const resolved = resolveAttachFromDockEdge(dockEdge, droppedOntoUuid, draggedUuid);
-  if (
-    !attachBank(resolved.childUuid, resolved.parentUuid, resolved.attachDirection, {
-      skipLivePush: true,
-    })
-  ) {
-    return false;
-  }
-
-  // Firmware sets x/y on the *dragged* bank; use post-attach snapshot.
-  const after = getBanksSnapshot();
-  const dragged = findByUuid(after, draggedUuid);
-  if (dragged) {
-    pushDockBanks({
-      droppedOntoBank: droppedOntoUuid,
-      draggedBank: draggedUuid,
-      droppedAt: dockEdge,
-      x: dragged.x,
-      y: dragged.y,
-    });
-  }
-  return true;
+  return attachBank(resolved.childUuid, resolved.parentUuid, resolved.attachDirection);
 }
 
 /** Attach multiple selected banks to `target` using the same handle semantics. */
@@ -1010,14 +652,6 @@ export function detachBanksKeepingDisplay(
     formerParents: toDetach.map((b) => b.attachedToUuid),
     label,
   });
-
-  // Bake-display detach: push undock with final free positions.
-  const after = getBanksSnapshot();
-  for (const d of toDetach) {
-    const bank = findByUuid(after, d.uuid);
-    if (bank) pushUndockBank(bank.uuid, bank.x, bank.y);
-  }
-
   return toDetach.length;
 }
 
@@ -1066,7 +700,7 @@ export function detachBanksCrossingMoveSet(moveUuids: Iterable<string>): number 
 /**
  * Delete / Backspace — deletes whichever target was last explicitly selected.
  */
-export async function handleDeleteKeyPress(): Promise<boolean> {
+export function handleDeleteKeyPress(): boolean {
   const meta = get(bankMeta);
   if (meta.deleteFocus === 'preset' && meta.selectedPresetUuids.length > 0) {
     return deleteSelectedPresets();
@@ -1080,7 +714,7 @@ export async function handleDeleteKeyPress(): Promise<boolean> {
 /**
  * Remove a bank; direct children are detached but keep their canvas positions.
  */
-export async function deleteSelectedBanks(): Promise<boolean> {
+export function deleteSelectedBanks(): boolean {
   const uuids = get(bankMeta).selectedBankUuids;
   if (uuids.length === 0) return false;
   if (uuids.length === 1) return deleteBank(uuids[0]!);
@@ -1090,13 +724,7 @@ export async function deleteSelectedBanks(): Promise<boolean> {
     .map((uuid) => findByUuid(list, uuid)?.name)
     .filter(Boolean);
   const message = `Delete ${uuids.length} selected banks (${names.join(', ')})? You can undo with the Undo button.`;
-  const proceed = await confirmAppDialog({
-    title: 'Delete banks',
-    message,
-    confirmLabel: 'Delete',
-    danger: true,
-  });
-  if (!proceed) return false;
+  if (!window.confirm(message)) return false;
 
   const detached = mapDetachedKeepingDisplay(
     list,
@@ -1113,23 +741,16 @@ export async function deleteSelectedBanks(): Promise<boolean> {
     error: null,
   }));
   log('store', 'deleteSelectedBanks', { count: uuids.length });
-  for (const uuid of uuids) pushDeleteBank(uuid);
   return true;
 }
 
-export async function deleteBank(uuid: string): Promise<boolean> {
+export function deleteBank(uuid: string): boolean {
   const list = getBanksSnapshot();
   const bank = findByUuid(list, uuid);
   if (!bank) return false;
 
   const message = `Delete "${bank.name}"? You can undo with the Undo button.`;
-  const proceed = await confirmAppDialog({
-    title: 'Delete bank',
-    message,
-    confirmLabel: 'Delete',
-    danger: true,
-  });
-  if (!proceed) return false;
+  if (!window.confirm(message)) return false;
 
   const childCount = list.filter((b) => b.attachedToUuid === uuid).length;
   const detached = mapDetachedKeepingDisplay(
@@ -1166,7 +787,6 @@ export async function deleteBank(uuid: string): Promise<boolean> {
     uuid,
     detachedChildren: childCount,
   });
-  pushDeleteBank(uuid);
   return true;
 }
 
@@ -1196,7 +816,6 @@ export function moveBankTo(
     ? new Set(options.moveUuids)
     : new Set<string>([uuid, ...collectClusterDescendantUuids(uuid, list)]);
 
-  let didMove = false;
   const apply = (): void => {
     const current = getBanksSnapshot();
     const currentBank = findByUuid(current, uuid);
@@ -1222,17 +841,12 @@ export function moveBankTo(
         };
       }),
     );
-    didMove = true;
   };
 
   if (isUndoGroupOpen()) {
     apply();
   } else {
     recordLayoutAround('Move bank', [...moveSet], apply);
-  }
-
-  if (didMove) {
-    pushBankPositions(getBanksSnapshot(), [...moveSet]);
   }
 }
 
@@ -1255,7 +869,6 @@ export function setBankOrigin(uuid: string, x: number, y: number): boolean {
     );
   });
   log('store', 'setBankOrigin', { name: bank.name, x: snappedX, y: snappedY });
-  pushSetPosition(uuid, snappedX, snappedY);
   return true;
 }
 
@@ -1290,16 +903,5 @@ export function realignAttachedBanks(): number {
 
   logPositionChanges('realign', 'positions changed by realign', before, realigned);
   log('store', 'realignAttachedBanks summary', { movedCount });
-
-  if (movedCount > 0) {
-    const movedUuids = realigned
-      .filter((bank) => {
-        const prev = findByUuid(before, bank.uuid);
-        return prev && (prev.x !== bank.x || prev.y !== bank.y);
-      })
-      .map((b) => b.uuid);
-    pushBankPositions(realigned, movedUuids);
-  }
-
   return movedCount;
 }

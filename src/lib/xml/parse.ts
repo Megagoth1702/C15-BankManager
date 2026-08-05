@@ -78,28 +78,12 @@ function parsePresets(bankXml: string): Preset[] {
   return presets.sort((a, b) => a.pos - b.pos);
 }
 
-/**
- * C15 historically wrote AttachmentDirection as a numeric enum string:
- *   0 = none, 1 = top, 2 = left  (Bank.h / to_string in firmware).
- * Newer exports use the words "left" / "top" (and our app also uses right/bottom).
- */
 function parseAttachDirection(value: string): AttachDirection | null {
   if (!value) return null;
-  const trimmed = value.trim();
-  if (ATTACH_DIRECTIONS.has(trimmed as AttachDirection)) {
-    return trimmed as AttachDirection;
+  if (ATTACH_DIRECTIONS.has(value as AttachDirection)) {
+    return value as AttachDirection;
   }
-  // Firmware enum ordinals (only none/top/left exist on device).
-  switch (trimmed) {
-    case '0':
-      return null;
-    case '1':
-      return 'top';
-    case '2':
-      return 'left';
-    default:
-      return null;
-  }
+  return null;
 }
 
 function parseBankBlock(bankXml: string): Bank {

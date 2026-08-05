@@ -1,10 +1,8 @@
 import type { AttachDirection } from '../types/bank';
 
 /**
- * C15 `dock-banks` edge — matches NonMaps `Orientation` / firmware `droppedAt`
- * (the tape on the bank that receives the drop).
+ * C15 `dock-banks` edge — matches NonMaps `Orientation` / firmware `droppedAt`.
  * @see _ref/nl-firmware/.../BankActions.cpp dock-banks
- * @see Bank::attachBank — callee becomes the *child* attached to the UUID arg.
  */
 export type DockEdge = 'west' | 'north' | 'east' | 'south';
 
@@ -15,36 +13,23 @@ export interface ResolvedAttach {
   attachDirection: AttachDirection;
 }
 
-/**
- * Face on the *dragged* bank that mates with the target → NonMaps tape on the
- * drop target. Left face of the dragged bank meets the target's east tape.
- */
+/** Attach handle on the dragged bank → dock edge on the drop target. */
 export function handleToDockEdge(handle: AttachDirection): DockEdge {
   switch (handle) {
     case 'left':
-      return 'east';
-    case 'top':
-      return 'south';
-    case 'right':
       return 'west';
-    case 'bottom':
+    case 'top':
       return 'north';
+    case 'right':
+      return 'east';
+    case 'bottom':
+      return 'south';
   }
 }
 
 /**
  * Resolve parent/child roles for a dock operation.
- * Mirrors firmware `dock-banks` + `Bank::attachBank` (callee = child):
- *
- * | droppedAt | who becomes child | parent | attach-direction |
- * |-----------|-------------------|--------|------------------|
- * | East      | dragged           | onto   | left             |
- * | West      | onto              | dragged| left             |
- * | South     | dragged           | onto   | top              |
- * | North     | onto              | dragged| top              |
- *
- * Horizontal children always sit to the **right** of their parent; vertical
- * children always sit **below** (slaveRight / slaveBottom).
+ * `droppedOnto` = bank receiving the drop; `dragged` = bank being attached.
  */
 export function resolveAttachFromDockEdge(
   dockEdge: DockEdge,
@@ -52,33 +37,29 @@ export function resolveAttachFromDockEdge(
   draggedUuid: string,
 ): ResolvedAttach {
   switch (dockEdge) {
-    case 'east':
-      // dragged->attachBank(onto, left) → onto | dragged
+    case 'north':
       return {
         parentUuid: droppedOntoUuid,
         childUuid: draggedUuid,
-        attachDirection: 'left',
+        attachDirection: 'top',
       };
     case 'west':
-      // onto->attachBank(dragged, left) → dragged | onto
       return {
-        parentUuid: draggedUuid,
-        childUuid: droppedOntoUuid,
+        parentUuid: droppedOntoUuid,
+        childUuid: draggedUuid,
         attachDirection: 'left',
       };
     case 'south':
-      // dragged->attachBank(onto, top) → onto above, dragged below
-      return {
-        parentUuid: droppedOntoUuid,
-        childUuid: draggedUuid,
-        attachDirection: 'top',
-      };
-    case 'north':
-      // onto->attachBank(dragged, top) → dragged above, onto below
       return {
         parentUuid: draggedUuid,
         childUuid: droppedOntoUuid,
         attachDirection: 'top',
+      };
+    case 'east':
+      return {
+        parentUuid: draggedUuid,
+        childUuid: droppedOntoUuid,
+        attachDirection: 'left',
       };
   }
 }
@@ -93,9 +74,18 @@ export function resolveAttachFromHandle(
 }
 
 /**
- * Cyan highlight on the **target** uses the same edge as firmware `droppedAt`
- * (the tape that received the drop).
+ * Cyan highlight goes on the geometric target edge the user approaches,
+ * which is opposite the firmware `droppedAt` tape name.
  */
 export function highlightEdgeForDockEdge(dockEdge: DockEdge): DockEdge {
-  return dockEdge;
+  switch (dockEdge) {
+    case 'west':
+      return 'east';
+    case 'east':
+      return 'west';
+    case 'north':
+      return 'south';
+    case 'south':
+      return 'north';
+  }
 }

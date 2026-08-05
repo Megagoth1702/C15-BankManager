@@ -4,12 +4,6 @@ export interface ImportableFile {
   file: File;
   /** Path relative to the picked folder root, e.g. `ssc (Stephan Schmitt)/ssc Pad 05.xml`. */
   relativePath: string;
-  /**
-   * Display name of the directory the user picked (directory picker only).
-   * Used when files sit at the pick root so they share one layout cluster key
-   * (folder name) instead of a generic "(root)" group.
-   */
-  rootFolderName?: string;
 }
 
 function isImportableFile(name: string): boolean {
@@ -19,7 +13,6 @@ function isImportableFile(name: string): boolean {
 async function collectFromDirectoryHandle(
   handle: FileSystemDirectoryHandle,
   parentPath = '',
-  rootFolderName?: string,
 ): Promise<ImportableFile[]> {
   const files: ImportableFile[] = [];
 
@@ -28,20 +21,12 @@ async function collectFromDirectoryHandle(
       const file = await (entry as FileSystemFileHandle).getFile();
       if (isImportableFile(file.name)) {
         const relativePath = parentPath ? `${parentPath}/${file.name}` : file.name;
-        files.push({
-          file,
-          relativePath,
-          ...(rootFolderName ? { rootFolderName } : {}),
-        });
+        files.push({ file, relativePath });
       }
     } else if (entry.kind === 'directory') {
       const childPath = parentPath ? `${parentPath}/${entry.name}` : entry.name;
       files.push(
-        ...(await collectFromDirectoryHandle(
-          entry as FileSystemDirectoryHandle,
-          childPath,
-          rootFolderName,
-        )),
+        ...(await collectFromDirectoryHandle(entry as FileSystemDirectoryHandle, childPath)),
       );
     }
   }
@@ -56,8 +41,7 @@ export function supportsDirectoryPicker(): boolean {
 /** Returns files from the native folder picker, or null if the user cancelled. */
 export async function pickFolderViaDirectoryPicker(): Promise<ImportableFile[] | null> {
   const handle = await window.showDirectoryPicker();
-  const rootFolderName = handle.name?.trim() || undefined;
-  const files = await collectFromDirectoryHandle(handle, '', rootFolderName);
+  const files = await collectFromDirectoryHandle(handle);
   return files;
 }
 
@@ -80,11 +64,8 @@ export function filterImportableFiles(files: FileList | File[]): File[] {
 export function folderLabelFromImportable(files: ImportableFile[]): string {
   const first = files[0];
   if (!first) return 'folder';
-  if (first.rootFolderName?.trim()) return first.rootFolderName.trim();
   const segment = first.relativePath.split('/')[0];
-  // Bare filename (no directory segment) is not a useful folder label.
-  if (segment && segment !== first.file.name) return segment;
-  return first.rootFolderName?.trim() || 'folder';
+  return segment || 'folder';
 }
 
 /** @deprecated Use folderLabelFromImportable */

@@ -7,7 +7,7 @@
   interface Props {
     root: BankTreeNode;
     bankIndexByUuid: Map<string, number>;
-    orderedUuids: string[];
+    treeOrderUuids: string[];
     filterQuery?: string;
     renamingUuid: string | null;
     renameValue: string;
@@ -15,13 +15,12 @@
     onrenamecommit: () => void;
     onrenamecancel: () => void;
     onstartrename: (uuid: string) => void;
-    onbankcontextmenu?: (bankUuid: string, event: MouseEvent) => void;
   }
 
   let {
     root,
     bankIndexByUuid,
-    orderedUuids,
+    treeOrderUuids,
     filterQuery = '',
     renamingUuid,
     renameValue,
@@ -29,7 +28,6 @@
     onrenamecommit,
     onrenamecancel,
     onstartrename,
-    onbankcontextmenu,
   }: Props = $props();
 
   const members = $derived(filterClusterMembers(root, filterQuery));
@@ -62,32 +60,30 @@
       <ul class="min-w-0 flex-1">
         {#each members as node (node.bank.uuid)}
           <BankTreeRow
-            bank={node.bank}
+            {node}
             index={bankIndexByUuid.get(node.bank.uuid) ?? 0}
-            {orderedUuids}
+            {treeOrderUuids}
             renaming={renamingUuid === node.bank.uuid}
             {renameValue}
             {onrenameinput}
             {onrenamecommit}
             {onrenamecancel}
             {onstartrename}
-            {onbankcontextmenu}
           />
         {/each}
       </ul>
     </div>
   {:else}
     <BankTreeRow
-      bank={root.bank}
+      node={root}
       index={bankIndexByUuid.get(root.bank.uuid) ?? 0}
-      {orderedUuids}
+      {treeOrderUuids}
       renaming={renamingUuid === root.bank.uuid}
       {renameValue}
       {onrenameinput}
       {onrenamecommit}
       {onrenamecancel}
       {onstartrename}
-      {onbankcontextmenu}
     />
   {/if}
 </li>

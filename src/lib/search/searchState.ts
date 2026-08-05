@@ -9,13 +9,3 @@ export const presetSearchState = writable<PresetSearchOptions>({
 });
 
 export const presetSearchQuery = writable('');
-
-/**
- * One-shot: open/focus the sidebar preset search field.
- * Set true before or while Presets tab mounts; PresetSearchBar consumes and clears.
- */
-export const pendingFocusPresetSearch = writable(false);
-
-export function requestFocusPresetSearch(): void {
-  pendingFocusPresetSearch.set(true);
-}

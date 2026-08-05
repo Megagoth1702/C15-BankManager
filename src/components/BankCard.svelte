@@ -8,13 +8,10 @@
     effectiveFacingWidth,
   } from '../lib/canvas/geometry';
   import {
-    bankBodyBorderWorldPx,
-    bankBodyOutlineShadow,
     dockEdgeHighlightBarStyle,
   } from '../lib/canvas/bankCardChrome';
   import { insertLineInnerY } from '../lib/canvas/presetDragHitTest';
   import { presetColorFromName } from '../lib/canvas/presetColors';
-  import { viewport } from '../lib/canvas/viewport.svelte';
 
   import {
     bankMeta,
@@ -45,13 +42,8 @@
     dragDisabled?: boolean;
     attachDropTarget?: boolean;
     dockEdgeHighlight?: DockEdge | null;
-    /** Show C15-style attach corridors (viewport banks while a bank drag is active). */
+    /** Show C15-style attach corridors (cluster / dock-hover only while dragging). */
     showAttachSlots?: boolean;
-    /**
-     * Which corridors to paint (C15 isTapeActive). When omitted with
-     * showAttachSlots, all four are shown (legacy).
-     */
-    activeAttachCorridors?: ReadonlySet<'L' | 'R' | 'T' | 'B'> | null;
     presetDropHighlight?: boolean;
     presetInsertIndex?: number | null;
     /** Live bank-drag chrome (owned by Canvas window gesture). */
@@ -96,7 +88,6 @@
     attachDropTarget = false,
     dockEdgeHighlight = null,
     showAttachSlots = false,
-    activeAttachCorridors = null,
     presetDropHighlight = false,
     presetInsertIndex = null,
     dragging = false,
@@ -155,11 +146,7 @@
   const chromeW = $derived(placementW);
   const headerPx = BANK_LAYOUT.headerHeight * scale;
   const rowPx = BANK_LAYOUT.presetRowHeight * scale;
-  /**
-   * World thickness that maps to an integer screen-pixel stroke after zoom
-   * (avoids one-sided vanishing under subpixel AA).
-   */
-  const borderPx = $derived(bankBodyBorderWorldPx(viewport.zoom));
+  const borderPx = Math.max(1, BANK_LAYOUT.bodyBorderWidth * scale);
   const radiusPx = BANK_LAYOUT.bodyCornerRadiusTop * scale;
   const numberColPx = BANK_LAYOUT.presetNumberWidth * scale;
   const headerFontPx = BANK_LAYOUT.headerFontHeight * scale;
@@ -198,20 +185,10 @@
           : 'var(--color-c15-bank-header)',
   );
 
-  /** Selection / user-positioned glow — outline applied via bankBodyOutlineShadow. */
-  const selectionGlowShadow = $derived.by(() => {
-    if (selected && !reduceSelectionGlow) {
-      return `0 0 0 ${Math.max(1, 2 * scale)}px var(--color-c15-bank-selected-glow), 0 0 ${12 * scale}px ${6 * scale}px rgba(173, 181, 217, 0.45)`;
-    }
-    if (userPositioned && !selected) {
-      return `0 0 0 ${Math.max(1, 1 * scale)}px rgba(14, 165, 233, 0.35)`;
-    }
-    return 'none';
-  });
-
-  /** Outline as outset box-shadow so it is not clipped by inner overflow:hidden. */
   const bodyShadow = $derived(
-    bankBodyOutlineShadow(borderPx, bodyBorderColor, selectionGlowShadow),
+    selected && !reduceSelectionGlow
+      ? `0 0 0 ${Math.max(1, 2 * scale)}px var(--color-c15-bank-selected-glow), 0 0 ${12 * scale}px ${6 * scale}px rgba(173, 181, 217, 0.45)`
+      : 'none',
   );
 
   function presetLabel(uuid: string): string {
@@ -373,8 +350,13 @@
     emitBankPointerDown(event, 'header');
   }
 
-  // Selection / user-positioned rings are folded into bodyShadow (Tailwind ring
-  // uses box-shadow and would fight the outline shadow if both were applied).
+  const bodyRingClass = $derived(
+    selected
+      ? 'ring-2 ring-c15-bank-selected-glow/70'
+      : userPositioned
+        ? 'ring-1 ring-sky-500/35'
+        : '',
+  );
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -388,43 +370,35 @@
   style:height="{outerH}px"
 >
   {#if showAttachSlots}
-    <!-- C15 empty attach tapes — only faces where isTapeActive is true. -->
-    {#if !activeAttachCorridors || activeAttachCorridors.has('L')}
-      <div
-        class="pointer-events-none absolute z-[15] bg-c15-attach-slot/50"
-        style:left="{-visibleAttachPx}px"
-        style:top="{tapePx}px"
-        style:width="{visibleAttachPx}px"
-        style:height="{innerH}px"
-      ></div>
-    {/if}
-    {#if !activeAttachCorridors || activeAttachCorridors.has('R')}
-      <div
-        class="pointer-events-none absolute z-[15] bg-c15-attach-slot/50"
-        style:left="{placementW}px"
-        style:top="{tapePx}px"
-        style:width="{visibleAttachPx}px"
-        style:height="{innerH}px"
-      ></div>
-    {/if}
-    {#if !activeAttachCorridors || activeAttachCorridors.has('T')}
-      <div
-        class="pointer-events-none absolute z-[15] bg-c15-attach-slot/50"
-        style:left="0"
-        style:top="{tapePx - visibleAttachPx}px"
-        style:width="{placementW}px"
-        style:height="{visibleAttachPx}px"
-      ></div>
-    {/if}
-    {#if !activeAttachCorridors || activeAttachCorridors.has('B')}
-      <div
-        class="pointer-events-none absolute z-[15] bg-c15-attach-slot/50"
-        style:left="0"
-        style:top="{tapePx + innerH}px"
-        style:width="{placementW}px"
-        style:height="{visibleAttachPx}px"
-      ></div>
-    {/if}
+    <!-- C15 attach corridors — outside flush chrome, visible only while dragging. -->
+    <div
+      class="pointer-events-none absolute z-[15] bg-c15-attach-slot/50"
+      style:left="{-visibleAttachPx}px"
+      style:top="{tapePx}px"
+      style:width="{visibleAttachPx}px"
+      style:height="{innerH}px"
+    ></div>
+    <div
+      class="pointer-events-none absolute z-[15] bg-c15-attach-slot/50"
+      style:left="{placementW}px"
+      style:top="{tapePx}px"
+      style:width="{visibleAttachPx}px"
+      style:height="{innerH}px"
+    ></div>
+    <div
+      class="pointer-events-none absolute z-[15] bg-c15-attach-slot/50"
+      style:left="0"
+      style:top="{tapePx - visibleAttachPx}px"
+      style:width="{placementW}px"
+      style:height="{visibleAttachPx}px"
+    ></div>
+    <div
+      class="pointer-events-none absolute z-[15] bg-c15-attach-slot/50"
+      style:left="0"
+      style:top="{tapePx + innerH}px"
+      style:width="{placementW}px"
+      style:height="{visibleAttachPx}px"
+    ></div>
   {/if}
 
   {#if dockEdgeHighlight}
@@ -460,17 +434,14 @@
     ></div>
   {/if}
 
-  <!--
-    Visible flush chrome — effective width (240/255) from bank.x; top tape inset only.
-    Outer shell has no overflow (outline is box-shadow; overflow would clip sides under zoom).
-    Inner clips preset list only.
-  -->
+  <!-- Visible flush chrome — effective width (240/255) from bank.x; top tape inset only -->
   <div
-    class="pointer-events-auto absolute"
+    class="pointer-events-auto absolute overflow-hidden bg-c15-preset-row {bodyRingClass}"
     style:left="{chromeLeftPx}px"
     style:top="{chromeTopPx}px"
     style:width="{chromeW}px"
     style:height="{innerH}px"
+    style:border="{borderPx}px solid {bodyBorderColor}"
     style:border-radius="{radiusPx}px {radiusPx}px 0 0"
     style:box-shadow="{bodyShadow}"
     onpointerenter={() => {
@@ -481,10 +452,6 @@
       hidePresetCommentTooltip();
     }}
   >
-    <div
-      class="absolute inset-0 overflow-hidden bg-c15-preset-row"
-      style:border-radius="{radiusPx}px {radiusPx}px 0 0"
-    >
     <!-- Header: drag handle + bank selection (canvas owns capture + move/up) -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
@@ -520,9 +487,9 @@
         />
       {:else}
         <span
-          class="min-w-0 flex-1 truncate font-medium leading-none text-c15-bank-header-text"
+          class="truncate font-medium leading-none text-c15-bank-header-text"
           style:font-size="{headerFontPx}px"
-          title="{index + 1} - {bank.name}{bank.attributes.Comment ? `\n${bank.attributes.Comment}` : ''}"
+          title="{index + 1} - {bank.name}"
         >
           {index + 1} - {bank.name}
         </span>
@@ -646,7 +613,6 @@
         {/each}
       </div>
     {/if}
-    </div>
   </div>
 
   {#if commentTooltip}

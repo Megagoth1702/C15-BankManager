@@ -17,11 +17,6 @@ import {
 import { presetRangeInOrder, uniquePresetUuids } from './presetSelection';
 import { setSidebarTab } from './settingsCommands';
 import { uuidEquals } from '../uuid/uuidKey';
-import {
-  pushLoadPreset,
-  pushSelectBank,
-  pushSelectPreset,
-} from '../live/livePush';
 
 export type SelectMode = 'replace' | 'toggle' | 'add';
 
@@ -87,12 +82,6 @@ export function selectBanks(
     mode,
     requested: uuids.map((u) => u.slice(0, 8)),
   });
-
-  // C15 is single-select. Multi-select (marquee / bulk move) is app-local —
-  // do not push select-bank for N≥2 (echoes used to collapse multi-select).
-  if (mode === 'replace' && uuids.length === 1) {
-    pushSelectBank(uuids[0]!);
-  }
 }
 
 export function selectPreset(
@@ -138,8 +127,6 @@ export function selectPreset(
         }),
       );
       syncBankSelectedPreset(bankUuid, presetUuid);
-      // Device selects the range end (primary).
-      pushSelectPreset(presetUuid);
       log('store', 'selectPresetRange', { bankUuid, count: selected.length });
       selTraceSelection('store.selectPresetRange', {
         bankUuid: bankUuid.slice(0, 8),
@@ -166,7 +153,6 @@ export function selectPreset(
     );
     if (frozen.length > 0) {
       syncBankSelectedPreset(bankUuid, presetUuid);
-      pushSelectPreset(presetUuid);
     }
     log('store', 'selectPresetToggle', { bankUuid, presetUuid });
     selTraceSelection('store.selectPresetToggle', {
@@ -178,12 +164,6 @@ export function selectPreset(
     return;
   }
 
-  // NonMaps: second click on already-selected sole preset → load into edit buffer.
-  const alreadySoleSelected =
-    sameBank &&
-    meta.selectedPresetUuids.length === 1 &&
-    uuidEquals(meta.selectedPresetUuids[0]!, presetUuid);
-
   bankMeta.update((m) =>
     withPresetFocus(m, surface, {
       presetSelectionBankUuid: bankUuid,
@@ -194,37 +174,14 @@ export function selectPreset(
     }),
   );
   syncBankSelectedPreset(bankUuid, presetUuid);
-
-  if (alreadySoleSelected) {
-    pushLoadPreset(presetUuid);
-    log('store', 'loadPreset', { bankUuid, presetUuid });
-    selTraceSelection('store.loadPreset', {
-      bankUuid: bankUuid.slice(0, 8),
-      presetUuid: presetUuid.slice(0, 8),
-      surface,
-    });
-  } else {
-    pushSelectPreset(presetUuid);
-    log('store', 'selectPreset', { bankUuid, presetUuid });
-    selTraceSelection('store.selectPreset', {
-      bankUuid: bankUuid.slice(0, 8),
-      presetUuid: presetUuid.slice(0, 8),
-      ctrl: options.ctrl ?? false,
-      shift: options.shift ?? false,
-      surface: options.surface ?? 'canvas',
-    });
-  }
-}
-
-/** Load the primary selected preset into the C15 edit buffer (Enter / Live). */
-export function loadSelectedPreset(): boolean {
-  const meta = get(bankMeta);
-  const uuid =
-    meta.selectedPresetUuids[meta.selectedPresetUuids.length - 1] ?? null;
-  if (!uuid) return false;
-  pushLoadPreset(uuid);
-  log('store', 'loadSelectedPreset', { presetUuid: uuid });
-  return true;
+  log('store', 'selectPreset', { bankUuid, presetUuid });
+  selTraceSelection('store.selectPreset', {
+    bankUuid: bankUuid.slice(0, 8),
+    presetUuid: presetUuid.slice(0, 8),
+    ctrl: options.ctrl ?? false,
+    shift: options.shift ?? false,
+    surface: options.surface ?? 'canvas',
+  });
 }
 
 /** Select multiple presets in one bank (e.g. when starting a drag). */
@@ -273,7 +230,6 @@ export function selectPresetsBatch(
     }),
   );
   syncBankSelectedPreset(bankUuid, primary);
-  pushSelectPreset(primary);
   log('store', 'selectPresetsBatch', { bankUuid, count: frozen.length });
   selTraceSelection('store.selectPresetsBatch', {
     bankUuid: bankUuid.slice(0, 8),
@@ -354,11 +310,6 @@ export function selectBank(
     mode,
     surface,
   });
-
-  // Mirror primary selection onto device (NonMaps select-bank).
-  if (uuid && mode === 'replace') {
-    pushSelectBank(uuid);
-  }
 }
 
 /** Sidebar tree click — Ctrl toggles; Shift range in tree order; plain click replaces. */

@@ -5,8 +5,6 @@ import { get } from 'svelte/store';
 import { log } from '../debug/sessionLog';
 import { downloadBytes, downloadTextFiles } from '../io/download';
 import { buildBankXmlFilename, sanitizeBackupFilename } from '../io/filename';
-import type { Bank } from '../types/bank';
-import { confirmAppDialog, promptAppDialog } from '../ui/appDialog';
 import { compressString } from '../xml/gzip';
 import {
   formatSerializeDate,
@@ -14,28 +12,9 @@ import {
   serializeSingleBankXml,
   validateBanksForC15Export,
 } from '../xml/serialize';
-import {
-  BROWSER_EXPORT_FILE_LABEL,
-  stampExportAttributes,
-} from './bankAttributes';
-import { bankMeta, banks, getBanksSnapshot } from './bankState';
+import { bankMeta, getBanksSnapshot } from './bankState';
 import { getPrimarySelectedUuid, setStoreError } from './documentCommit';
-import { clearSessionDirty, markSessionDirty } from './sessionDirty';
-
-/**
- * Persist export metadata onto the live session for the given bank UUIDs.
- * Full export then clears dirty; partial export marks dirty so a later backup keeps the stamps.
- */
-function persistExportStampsInSession(
-  stampedByUuid: Map<string, Bank>,
-  options: { markDirty: boolean },
-): void {
-  const next = getBanksSnapshot().map((bank) => stampedByUuid.get(bank.uuid) ?? bank);
-  banks.set(next);
-  if (options.markDirty) {
-    markSessionDirty();
-  }
-}
+import { clearSessionDirty } from './sessionDirty';
 
 function pad2(value: number): string {
   return String(value).padStart(2, '0');
@@ -81,12 +60,12 @@ export interface ExportBanksAsXmlOptions {
 }
 
 /** Full-session export (same as `exportBackup()` with no bank filter). */
-export function exportAllAsBackup(options: { filename?: string } = {}): Promise<boolean> {
+export function exportAllAsBackup(options: { filename?: string } = {}): boolean {
   return exportBackup(options);
 }
 
 /** Export currently selected banks only (`bankMeta.selectedBankUuids`). */
-export function exportSelectedBanks(options: { filename?: string } = {}): Promise<boolean> {
+export function exportSelectedBanks(options: { filename?: string } = {}): boolean {
   return exportBackup({
     ...options,
     bankUuids: get(bankMeta).selectedBankUuids,
@@ -99,7 +78,7 @@ export function exportSelectedBanks(options: { filename?: string } = {}): Promis
  */
 export function exportSelectedBanksAsXml(
   options: ExportBanksAsXmlOptions = {},
-): Promise<boolean> {
+): boolean | Promise<boolean> {
   return exportBanksAsXml({
     ...options,
     bankUuids: options.bankUuids ?? get(bankMeta).selectedBankUuids,
@@ -111,9 +90,9 @@ export function exportSelectedBanksAsXml(
  * one file per bank. Never packs multiple banks into one XML.
  * Does not clear session dirty.
  */
-export async function exportBanksAsXml(
+export function exportBanksAsXml(
   options: ExportBanksAsXmlOptions = {},
-): Promise<boolean> {
+): boolean | Promise<boolean> {
   const allBanks = getBanksSnapshot();
   const uuids = options.bankUuids ?? get(bankMeta).selectedBankUuids;
   const uuidFilter = new Set(uuids);
@@ -130,37 +109,33 @@ export async function exportBanksAsXml(
     (w) => !w.includes('references a missing parent bank'),
   );
   if (warnings.length > 0) {
-    const proceed = await confirmAppDialog({
-      title: 'Export warnings',
-      message: `${warnings.join('\n')}\n\nContinue export anyway?`,
-      confirmLabel: 'Export anyway',
-      danger: true,
-    });
+    const proceed = window.confirm(
+      `Export warnings:\n\n${warnings.join('\n')}\n\nContinue export anyway?`,
+    );
     if (!proceed) return false;
   }
 
   if (list.length >= 10) {
-    const proceed = await confirmAppDialog({
-      title: 'Download many files',
-      message: `Download ${list.length} separate XML files (one per bank)?\n\nYour browser may ask permission for multiple downloads.`,
-      confirmLabel: 'Download',
-    });
+    const proceed = window.confirm(
+      `Download ${list.length} separate XML files (one per bank)?`,
+    );
     if (!proceed) return false;
   }
 
   const serializeDate = formatSerializeDate();
   const usedNames = new Set<string>();
   const files: { text: string; filename: string }[] = [];
-  const stampedByUuid = new Map<string, Bank>();
 
   try {
     for (const bank of list) {
       const filename = buildBankXmlFilename(bank.name, usedNames);
-      // Offline tool records the download name; C15 WebUI uses "(via Browser)".
-      const exportName = filename || BROWSER_EXPORT_FILE_LABEL;
-      const stamped = stampExportAttributes(bank, exportName, serializeDate);
-      stampedByUuid.set(bank.uuid, stamped);
-      const text = serializeSingleBankXml(stamped, { serializeDate });
+      const text = serializeSingleBankXml(bank, {
+        serializeDate,
+        attributeOverrides: {
+          'Date of Export File': serializeDate,
+          'Name of Export File': filename,
+        },
+      });
       files.push({ text, filename });
     }
   } catch (err) {
@@ -171,7 +146,6 @@ export async function exportBanksAsXml(
   }
 
   const finishOk = (): boolean => {
-    persistExportStampsInSession(stampedByUuid, { markDirty: true });
     bankMeta.update((m) => ({ ...m, error: null }));
     log('export', 'exportBanksAsXml ok', {
       bankCount: files.length,
@@ -210,7 +184,7 @@ export async function exportBanksAsXml(
  * Full export (no `bankUuids`, or filter covers every bank) clears session dirty;
  * partial export does not.
  */
-export async function exportBackup(options: ExportBackupOptions = {}): Promise<boolean> {
+export function exportBackup(options: ExportBackupOptions = {}): boolean {
   const allBanks = getBanksSnapshot();
   const isSubset = options.bankUuids !== undefined;
   const uuidFilter = isSubset ? new Set(options.bankUuids) : null;
@@ -227,24 +201,16 @@ export async function exportBackup(options: ExportBackupOptions = {}): Promise<b
 
   const warnings = validateBanksForC15Export(list);
   if (warnings.length > 0) {
-    const proceed = await confirmAppDialog({
-      title: 'Export warnings',
-      message: `${warnings.join('\n')}\n\nContinue export anyway?`,
-      confirmLabel: 'Export anyway',
-      danger: true,
-    });
+    const proceed = window.confirm(
+      `Export warnings:\n\n${warnings.join('\n')}\n\nContinue export anyway?`,
+    );
     if (!proceed) return false;
   }
 
   const suggested = buildDefaultExportFilename();
   let rawFilename = options.filename;
   if (!rawFilename) {
-    const chosen = await promptAppDialog({
-      title: 'Save backup',
-      message: 'File name for the .nlbackup download:',
-      defaultValue: suggested,
-      confirmLabel: 'Download',
-    });
+    const chosen = window.prompt('Save backup as:', suggested);
     if (chosen === null) return false;
     rawFilename = chosen;
   }
@@ -259,14 +225,8 @@ export async function exportBackup(options: ExportBackupOptions = {}): Promise<b
   try {
     const filename = sanitizeBackupFilename(rawFilename);
     const serializeDate = formatSerializeDate();
-    // C15 browser export stamps "(via Browser)"; also keep the chosen download name.
-    const exportLabel = filename || BROWSER_EXPORT_FILE_LABEL;
-    const stampedList = list.map((bank) =>
-      stampExportAttributes(bank, exportLabel, serializeDate),
-    );
-    const stampedByUuid = new Map(stampedList.map((bank) => [bank.uuid, bank]));
     const xml = serializePresetManagerXml({
-      banks: stampedList,
+      banks: list,
       serializeDate,
       selectedBankUuid: selectedInExport,
       selectedMidiBankUuid: meta.selectedMidiBankUuid,
@@ -274,7 +234,6 @@ export async function exportBackup(options: ExportBackupOptions = {}): Promise<b
     const bytes = compressString(xml);
 
     downloadBytes(bytes, filename);
-    persistExportStampsInSession(stampedByUuid, { markDirty: !isFullExport });
     if (isFullExport) {
       clearSessionDirty();
     }

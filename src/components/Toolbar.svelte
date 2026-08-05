@@ -29,7 +29,6 @@
     undo,
   } from '../lib/model/bankStore';
   import { countAttachedBanks } from '../lib/model/positioning';
-  import LiveModeBar from './LiveModeBar.svelte';
   import MassImportDialog from './MassImportDialog.svelte';
 
   let realignMessage = $state<string | null>(null);
@@ -168,13 +167,10 @@
     massImportTotal = pendingImportFiles.length;
 
     try {
-      const result = await executeMassImport(pendingImportFiles, options, (done, total) => {
+      await executeMassImport(pendingImportFiles, options, (done, total) => {
         massImportProgress = done;
         massImportTotal = total;
       });
-      // Live replace cancelled: leave the mass-import dialog open so the user
-      // can switch to Merge or dismiss deliberately.
-      if (result.cancelled) return;
       massImportOpen = false;
       pendingImportFiles = [];
       massImportScan = null;
@@ -216,16 +212,16 @@
     exportMenuOpen = !exportMenuOpen;
   }
 
-  async function handleExportAll(): Promise<void> {
+  function handleExportAll(): void {
     closeExportMenu();
-    if (await exportAllAsBackup()) {
+    if (exportAllAsBackup()) {
       showExportFeedback('Backup downloaded');
     }
   }
 
-  async function handleExportSelected(): Promise<void> {
+  function handleExportSelected(): void {
     closeExportMenu();
-    if (await exportSelectedBanks()) {
+    if (exportSelectedBanks()) {
       showExportFeedback(
         selectedBankCount === 1
           ? '1 bank backup downloaded'
@@ -236,7 +232,8 @@
 
   async function handleExportSelectedAsXml(): Promise<void> {
     closeExportMenu();
-    if (await exportSelectedBanksAsXml()) {
+    const result = await Promise.resolve(exportSelectedBanksAsXml());
+    if (result) {
       showExportFeedback(
         selectedBankCount === 1
           ? '1 bank XML downloaded'
@@ -272,15 +269,14 @@
   class="app-ui flex h-12 shrink-0 items-center gap-3 border-b border-c15-border bg-c15-surface px-4"
 >
   <h1 class="text-sm font-semibold tracking-wide text-c15-accent">C15 Bank Manager</h1>
-  <span class="text-xs text-c15-text-muted">Preset bank arrangement</span>
+  <span class="text-xs text-c15-text-muted">Offline preset bank arrangement</span>
 
   <div class="ml-auto flex items-center gap-3">
-    <LiveModeBar />
     <button
       type="button"
       class="rounded border border-c15-border bg-c15-surface-raised px-3 py-1.5 text-xs text-c15-text transition-colors hover:border-c15-accent hover:text-c15-accent disabled:cursor-not-allowed disabled:opacity-50"
       disabled={!$canUndo}
-      title="Undo — while Live, runs on the C15 (device is source of truth)"
+      title="Undo"
       onclick={() => undo()}
     >
       Undo
@@ -289,7 +285,7 @@
       type="button"
       class="rounded border border-c15-border bg-c15-surface-raised px-3 py-1.5 text-xs text-c15-text transition-colors hover:border-c15-accent hover:text-c15-accent disabled:cursor-not-allowed disabled:opacity-50"
       disabled={!$canRedo}
-      title="Redo — while Live, runs on the C15 (device is source of truth)"
+      title="Redo"
       onclick={() => redo()}
     >
       Redo

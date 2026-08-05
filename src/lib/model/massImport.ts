@@ -9,7 +9,6 @@ import {
 } from '../layout/smartLayout';
 import type { Bank } from '../types/bank';
 import { parseFileBytes } from '../xml/parse';
-import { stampImportAttributes } from './bankAttributes';
 import { remapIncomingAgainstSession } from './importMerge';
 
 
@@ -27,8 +26,6 @@ export interface MassImportResult {
   succeeded: number;
   failed: number;
   errors: string[];
-  /** True when Live replace confirm was declined — no local or device changes. */
-  cancelled?: boolean;
 }
 
 export interface MassImportPipelineResult {
@@ -50,21 +47,12 @@ async function parseAllEntries(
     try {
       const bytes = new Uint8Array(await item.file.arrayBuffer());
       const doc = parseFileBytes(bytes, item.file.name);
-      const containingFolder = parseContainingFolder(
-        item.relativePath,
-        item.rootFolderName,
-      );
+      const containingFolder = parseContainingFolder(item.relativePath);
       const subPath = parseSubPath(item.relativePath);
 
-      // Single-bank XML: stamp import like C15 (clear export). Multi-bank backups:
-      // preserve existing import/export attributes from the file.
-      const isSingleBank = doc.source === 'single-bank';
       for (const bank of doc.banks) {
-        const stamped = isSingleBank
-          ? stampImportAttributes(bank, item.file.name)
-          : bank;
         entries.push({
-          bank: stamped,
+          bank,
           meta: {
             containingFolder,
             subPath,
@@ -128,11 +116,11 @@ export async function runMassImportPipeline(
   const laidOut = applyFolderChainLayout(uniqueEntries, { sortBy: options.sortBy }, baseBanks);
 
   const incoming = entriesToBanks(laidOut);
-  // Second pass covers any edge-case collision after layout (source banks already reminted).
+  // Folder-parent banks are created during layout; remint if they collide with the session.
   const remapped = remapIncomingAgainstSession(baseBanks, incoming);
   const layoutMeta = remapMetaForIncoming(laidOut, remapped);
   const merged = options.canvasMode === 'replace' ? remapped : [...baseBanks, ...remapped];
-  // Layout assigns fresh coordinates; import-heal would break per-folder chain attachments.
+  // Layout assigns fresh coordinates; import-heal would break folder-parent attachments.
   const healed = merged;
 
   return {

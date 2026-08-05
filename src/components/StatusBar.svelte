@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { liveMode } from '../lib/live/liveMode';
   import { bankMeta, banks, sessionDirty } from '../lib/model/bankStore';
 
   const selectionSummary = $derived.by(() => {
@@ -12,31 +11,11 @@
     const bank = $banks.find((b) => b.uuid === meta.selectedBankUuids[0]);
     return bank ? { kind: 'single' as const, bank } : null;
   });
-
-  const liveActive = $derived(
-    $liveMode.connection === 'live' ||
-      $liveMode.connection === 'connecting' ||
-      $liveMode.connection === 'reconnecting',
-  );
 </script>
 
 <footer
-  class="app-ui flex h-7 shrink-0 items-center gap-4 border-t px-4 text-xs text-c15-text-muted {liveActive
-    ? 'border-emerald-800/80 bg-emerald-950/30'
-    : 'border-c15-border bg-c15-surface'}"
+  class="app-ui flex h-7 shrink-0 items-center gap-4 border-t border-c15-border bg-c15-surface px-4 text-xs text-c15-text-muted"
 >
-  {#if liveActive}
-    <span
-      class="font-medium tracking-wide text-emerald-300"
-      title={$liveMode.detail ?? 'Live mode'}
-    >
-      {$liveMode.connection === 'live' ? 'LIVE' : $liveMode.connection.toUpperCase()}
-      {#if $liveMode.connection === 'live' && !$liveMode.libraryReady}
-        <span class="font-normal text-amber-200/90">· sync…</span>
-      {/if}
-    </span>
-    <span class="text-c15-border">|</span>
-  {/if}
   <span>{$banks.length} bank{$banks.length === 1 ? '' : 's'}</span>
 
   {#if $sessionDirty}

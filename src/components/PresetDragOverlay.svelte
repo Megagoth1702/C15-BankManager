@@ -5,18 +5,9 @@
     label: string;
     count: number;
     moveMode: boolean;
-    /** True when pointer is not over a bank — release creates a new bank (C15). */
-    createBankOnDrop?: boolean;
   }
 
-  let {
-    clientX,
-    clientY,
-    label,
-    count,
-    moveMode,
-    createBankOnDrop = false,
-  }: Props = $props();
+  let { clientX, clientY, label, count, moveMode }: Props = $props();
 </script>
 
 <div
@@ -28,12 +19,6 @@
     {label}{count > 1 ? ` (+${count - 1})` : ''}
   </div>
   <div class="text-xs text-c15-text-muted">
-    {#if createBankOnDrop}
-      Release to create new bank (copy)
-    {:else if moveMode}
-      Ctrl: move (remove from source)
-    {:else}
-      Copy to insert at line · hold Ctrl to move
-    {/if}
+    {moveMode ? 'Ctrl: move (remove from source)' : 'Copy to insert at line · hold Ctrl to move'}
   </div>
 </div>
