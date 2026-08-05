@@ -1,5 +1,10 @@
 import { slaveSlotForAttach, type AttachmentSlaveSlot } from '../canvas/attachSemantics';
 import type { AttachDirection, Bank } from '../types/bank';
+import {
+  buildClusterTopology,
+  isTapeActive,
+  parentTapeForChildAttach,
+} from './clusterTopology';
 import { collectClusterDescendantUuids } from './positioning';
 
 export function wouldCreateAttachmentCycle(
@@ -52,6 +57,18 @@ export function canAttachBank(
     return {
       ok: false,
       reason: `Parent already has a ${label} attachment (${occupant.name}).`,
+    };
+  }
+
+  // C15 isTapeActive: parent East/South must be free for exterior attach
+  // (e.g. no East on a column bank when an ancestor already has slaveRight).
+  const topology = buildClusterTopology(bankList);
+  const parentTape = parentTapeForChildAttach(attachDirection);
+  if (!isTapeActive(topology, parentUuid, parentTape)) {
+    return {
+      ok: false,
+      reason:
+        'That attach face is not available on this bank (C15 cluster rules).',
     };
   }
 

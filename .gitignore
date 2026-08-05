@@ -17,3 +17,12 @@ dist-ssr
 # Logs
 *.log
 npm-debug.log*
+
+# Local Live pack build output / runtime
+release-artifacts/
+local-pack/runtime/
+local-pack/launcher.log
+local-pack/launcher.pid
+local-pack/.update-tmp/
+local-pack/app.bak/
+local-pack/launcher.bak/

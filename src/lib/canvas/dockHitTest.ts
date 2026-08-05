@@ -1,5 +1,10 @@
 import type { DockEdge } from '../model/attachOperation';
 import { highlightEdgeForDockEdge } from '../model/attachOperation';
+import {
+  buildClusterTopology,
+  isTapeActive,
+  type ClusterTopology,
+} from '../model/clusterTopology';
 import type { Bank } from '../types/bank';
 import {
   type AttachCorridorCache,
@@ -36,36 +41,44 @@ export interface ClusterDockHit extends DockHit {
 /**
  * Complementary attach-corridor pairs only (L↔R, T↔B).
  * Tapes and outer proximity never participate.
+ *
+ * `dockEdge` is NonMaps / firmware `droppedAt` on the **target** bank
+ * (East tape when the dragged bank approaches from the right, etc.).
  */
 const COMPLEMENTARY_PAIRS: readonly {
   dragged: AttachCorridorId;
   target: AttachCorridorId;
-  /** Approach side of the dragged bank → firmware dockEdge (unchanged mapping). */
+  /** Firmware `droppedAt` tape on the target bank. */
   dockEdge: DockEdge;
+  /** Cyan edge on the dragged bank (mating face). */
   draggedHighlightEdge: DockEdge;
 }[] = [
   {
+    // Dragged left face ∩ target right face → drop on target's East tape
     dragged: 'L',
     target: 'R',
-    dockEdge: 'west',
+    dockEdge: 'east',
     draggedHighlightEdge: 'west',
   },
   {
+    // Dragged right face ∩ target left face → drop on target's West tape
     dragged: 'R',
     target: 'L',
-    dockEdge: 'east',
+    dockEdge: 'west',
     draggedHighlightEdge: 'east',
   },
   {
+    // Dragged top ∩ target bottom → drop on target's South tape
     dragged: 'T',
     target: 'B',
-    dockEdge: 'north',
+    dockEdge: 'south',
     draggedHighlightEdge: 'north',
   },
   {
+    // Dragged bottom ∩ target top → drop on target's North tape
     dragged: 'B',
     target: 'T',
-    dockEdge: 'south',
+    dockEdge: 'north',
     draggedHighlightEdge: 'south',
   },
 ];
@@ -98,6 +111,11 @@ export interface DockHitTestOptions {
    * legacy area-first ranking (tests / non-pointer callers).
    */
   pointerC15?: { x: number; y: number };
+  /**
+   * Prebuilt master/slave topology for C15 `isTapeActive` filtering.
+   * When omitted, built once per dock search from `banks`.
+   */
+  topology?: ClusterTopology;
 }
 
 /**
@@ -193,6 +211,7 @@ function findDockTargetForDraggedBankScored(
   const cache = options.corridorCache;
   const pointer = options.pointerC15;
   const usePointer = pointer != null;
+  const topology = options.topology ?? buildClusterTopology(banks);
   const draggedCorridors = attachCorridorsForBankCached(
     cache,
     draggedBank,
@@ -218,6 +237,12 @@ function findDockTargetForDraggedBankScored(
     );
 
     for (const pair of COMPLEMENTARY_PAIRS) {
+      // C15: both mating empty tapes must be active (Tape.fitsTo + isTapeActive).
+      if (!isTapeActive(topology, target.uuid, pair.dockEdge)) continue;
+      if (!isTapeActive(topology, draggedUuid, pair.draggedHighlightEdge)) {
+        continue;
+      }
+
       const a = draggedCorridors[pair.dragged];
       const b = targetCorridors[pair.target];
       // Prefer AABB helper so area and pointer distance share one overlap rect.
@@ -294,6 +319,8 @@ export function findDockTargetForDragCluster(
 
   const excludeCluster = options.excludeClusterUuids ?? members;
   const byUuid = new Map(banks.map((b) => [b.uuid, b]));
+  // One topology for the whole cluster search (attachments stable mid-drag).
+  const topology = options.topology ?? buildClusterTopology(banks);
 
   const usePointer = options.pointerC15 != null;
   let best: (ScoredDockHit & { memberUuid: string }) | null = null;
@@ -308,6 +335,7 @@ export function findDockTargetForDragCluster(
       displayByUuid,
       {
         ...options,
+        topology,
         excludeUuid: memberUuid,
         excludeClusterUuids: excludeCluster,
       },
@@ -344,7 +372,7 @@ export function validatePreferredDockHit(
   clusterUuids: ReadonlySet<string>,
   displayByUuid: DisplayPositionMap,
   preferred: PreferredDockSpec,
-  options: Pick<DockHitTestOptions, 'corridorCache'> = {},
+  options: Pick<DockHitTestOptions, 'corridorCache' | 'topology'> = {},
 ): ClusterDockHit | null {
   if (!clusterUuids.has(preferred.memberUuid)) return null;
   if (clusterUuids.has(preferred.targetUuid)) return null;
@@ -356,6 +384,14 @@ export function validatePreferredDockHit(
 
   const pair = COMPLEMENTARY_PAIRS.find((p) => p.dockEdge === preferred.dockEdge);
   if (!pair) return null;
+
+  const topology = options.topology ?? buildClusterTopology(banks);
+  if (!isTapeActive(topology, preferred.targetUuid, pair.dockEdge)) return null;
+  if (
+    !isTapeActive(topology, preferred.memberUuid, pair.draggedHighlightEdge)
+  ) {
+    return null;
+  }
 
   const cache = options.corridorCache;
   const memberOrigin = getDisplayPosition(member, displayByUuid);

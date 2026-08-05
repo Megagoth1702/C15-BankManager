@@ -1,0 +1,96 @@
+name: Release Local Live pack
+
+# On every push to main: build C15-OPM-local.zip and publish/update a GitHub Release
+# tagged v{package.json version}. Pages deploy stays in pages.yml.
+#
+# Maintainer flow:
+#   1) Bump "version" in package.json when you want a new release number
+#   2) Push to main (via publish:export from workbench, or direct public commit)
+#   3) Actions builds the zip and attaches it to Releases (asset name fixed for auto-update)
+#
+# Manual: Actions → "Release Local Live pack" → Run workflow
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-local-pack
+  cancel-in-progress: true
+
+jobs:
+  pack-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install
+        run: npm ci --no-fund --no-audit
+
+      - name: Build Local Live pack
+        run: npm run pack:local
+
+      - name: Verify pack artifact
+        run: |
+          test -f release-artifacts/C15-OPM-local.zip
+          test -f release-artifacts/C15-OPM-local/app/index.html
+          # Local pack must use relative asset URLs (not Pages base)
+          if grep -q '/C15-OfflinePresetManager/' release-artifacts/C15-OPM-local/app/index.html; then
+            echo 'ERROR: local pack still has Pages base path'
+            cat release-artifacts/C15-OPM-local/app/index.html
+            exit 1
+          fi
+          echo 'OK pack:'
+          ls -la release-artifacts/
+          cat release-artifacts/C15-OPM-local/app/version.json
+
+      - name: Read package version
+        id: ver
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Pack version: $VERSION"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.tag }} — Local Live pack
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          make_latest: true
+          # Re-pushing the same version updates assets (auto-update always uses /releases/latest)
+          files: |
+            release-artifacts/C15-OPM-local.zip
+            release-artifacts/C15-OPM-local.zip.sha256
+          body: |
+            ## Local Live pack
+
+            Run the app on your PC so **Live Wi‑Fi** to the C15 works.
+            The website alone cannot (HTTPS pages cannot open the C15’s `ws://` link).
+
+            1. Download **C15-OPM-local.zip** below
+            2. Unzip → double-click **Start.bat** (Windows) / **Start.command** (macOS) / **Start.sh** (Linux)
+            3. First run downloads official Node.js once from nodejs.org
+            4. In the app: connect to your C15 on the LAN
+
+            Leave the console window open while using the app — **closing it stops the server**.
+
+            Offline editing still works on the [website](https://megagoth1702.github.io/C15-OfflinePresetManager/).
+
+            **Version:** `${{ steps.ver.outputs.tag }}`  
+            **Commit:** `${{ github.sha }}`
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -20,6 +20,8 @@
     presetUuids: string[];
     onduplicate?: () => void;
     ondelete?: () => void;
+    /** Copy selection into a new free bank near the source. */
+    onnewbank?: () => void;
     onclose?: () => void;
   }
 
@@ -30,6 +32,7 @@
     presetUuids,
     onduplicate,
     ondelete,
+    onnewbank,
     onclose,
   }: Props = $props();
 
@@ -301,6 +304,16 @@
     }}
   >
     Duplicate {count === 1 ? 'preset' : `${count} presets`}
+  </button>
+  <button
+    type="button"
+    class="w-full px-3 py-1.5 text-left text-xs text-c15-text transition-colors hover:bg-c15-surface hover:text-c15-accent"
+    onclick={() => {
+      onnewbank?.();
+      onclose?.();
+    }}
+  >
+    New bank from {count === 1 ? 'preset' : `${count} presets`}
   </button>
   <button
     type="button"

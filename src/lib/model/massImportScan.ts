@@ -24,8 +24,18 @@ export interface ScanGroupSummary {
   presetCount: number;
 }
 
+export interface ScanFailedFile {
+  relativePath: string;
+  fileName: string;
+  reason: string;
+}
+
 export interface MassImportScanResult {
   files: ScanFileResult[];
+  /** Successfully parsed files (subset of `files`). */
+  okFiles: ScanFileResult[];
+  /** Files that could not be imported (non-bank / corrupt / parse error). */
+  failedFiles: ScanFailedFile[];
   groups: ScanGroupSummary[];
   totalFiles: number;
   totalBanks: number;
@@ -65,7 +75,10 @@ export async function scanMassImport(
 
   for (let i = 0; i < files.length; i++) {
     const entry = files[i]!;
-    const containingFolder = parseContainingFolder(entry.relativePath);
+    const containingFolder = parseContainingFolder(
+      entry.relativePath,
+      entry.rootFolderName,
+    );
     const subPath = parseSubPath(entry.relativePath);
 
     try {
@@ -104,15 +117,22 @@ export async function scanMassImport(
   }
 
   const ok = results.filter((r) => !r.error);
+  const failed = results.filter((r) => r.error);
   const folderLabel = importRootLabel(files);
 
   return {
     files: results,
+    okFiles: ok,
+    failedFiles: failed.map((r) => ({
+      relativePath: r.relativePath,
+      fileName: r.fileName,
+      reason: r.error ?? 'Unknown error',
+    })),
     groups: summarizeGroups(results),
     totalFiles: files.length,
     totalBanks: ok.reduce((sum, r) => sum + r.bankCount, 0),
     totalPresets: ok.reduce((sum, r) => sum + r.presetCount, 0),
-    errorCount: results.filter((r) => r.error).length,
+    errorCount: failed.length,
     folderLabel,
   };
 }
@@ -120,6 +140,8 @@ export async function scanMassImport(
 function importRootLabel(files: ImportableFile[]): string {
   const first = files[0];
   if (!first) return 'folder';
+  if (first.rootFolderName?.trim()) return first.rootFolderName.trim();
   const segment = first.relativePath.split('/')[0];
-  return segment || 'folder';
+  if (segment && segment !== first.file.name) return segment;
+  return 'folder';
 }

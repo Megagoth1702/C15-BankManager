@@ -4,7 +4,10 @@ import {
   setBankLodFullZoom,
 } from '../canvas/lod';
 import { log } from '../debug/sessionLog';
-import { saveSidebarSettings, type SidebarTab } from '../ui/sidebarSettings';
+import {
+  updateSidebarSettings,
+  type SidebarTab,
+} from '../ui/sidebarSettings';
 import { appSettings } from './bankState';
 
 export function setSidebarTab(tab: SidebarTab): void {
@@ -13,7 +16,8 @@ export function setSidebarTab(tab: SidebarTab): void {
   if (current.sidebarTab === tab) return;
   const width = current.sidebarWidthPx;
   appSettings.update((s) => ({ ...s, sidebarTab: tab }));
-  saveSidebarSettings({ widthPx: width, tab });
+  // Merge so bank sort (and collapsed) are not wiped on tab switch from canvas selection.
+  updateSidebarSettings({ widthPx: width, tab });
 }
 
 export function setShowSynthZone(enabled: boolean): void {

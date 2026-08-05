@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Linux / terminal entry for Local Live pack
+set -euo pipefail
+cd "$(dirname "$0")"
+
+echo ""
+echo "  C15 Offline Preset Manager — Local Live pack"
+echo ""
+
+chmod +x "./launcher/ensure-node.sh" 2>/dev/null || true
+
+if [ ! -x "./runtime/node/bin/node" ]; then
+  echo "  Preparing portable Node.js runtime (first run only)…"
+  if ! bash "./launcher/ensure-node.sh"; then
+    if command -v node >/dev/null 2>&1; then
+      echo "  Using system Node…"
+      exec node "./launcher/bootstrap.mjs"
+    fi
+    echo "  Failed to install Node. See launcher.log"
+    exit 1
+  fi
+fi
+
+if [ -x "./runtime/node/bin/node" ]; then
+  exec "./runtime/node/bin/node" "./launcher/bootstrap.mjs"
+else
+  exec node "./launcher/bootstrap.mjs"
+fi
