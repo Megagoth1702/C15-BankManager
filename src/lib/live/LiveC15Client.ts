@@ -1,6 +1,6 @@
 /**
  * Minimal playground WebUI client: WebSocket path-query RPC + XML document pushes.
- * @see docs/C15_LIVE_PROTOCOL.md
+ * @see .ObsidianBrain/Design/C15_LIVE_PROTOCOL.md
  * @see NonMaps WebSocketConnection / ServerProxy
  */
 

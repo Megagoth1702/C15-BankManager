@@ -167,7 +167,7 @@ function main() {
   log(`  SHA256:   ${sha}`);
   log('');
   log('Upload the zip to a GitHub Release as asset name exactly: C15-OPM-local.zip');
-  log('See docs/LOCAL_PACK.md for the Releases checklist.');
+  log('See .ObsidianBrain/Ops/LOCAL_PACK.md for the Releases checklist.');
 }
 
 main();

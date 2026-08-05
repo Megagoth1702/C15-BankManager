@@ -53,12 +53,16 @@ export function clearBankSelectionFields<
   T extends {
     selectedBankUuids: string[];
     renamingBankUuid: string | null;
+    bankSelectionAnchorUuid?: string | null;
+    bankSelectionBaseUuids?: string[];
   },
 >(m: T): T {
   return {
     ...m,
     selectedBankUuids: [],
     renamingBankUuid: null,
+    bankSelectionAnchorUuid: null,
+    bankSelectionBaseUuids: [],
   };
 }
 

@@ -65,7 +65,8 @@ function groupBanksByFolder(
 
   for (const bank of banks) {
     const meta = metaMap.get(bank.uuid);
-    const folder = meta?.containingFolder ?? '(unknown)';
+    // Prefer packing key so multi-bank backups report as separate clusters.
+    const folder = meta?.layoutClusterKey ?? meta?.containingFolder ?? '(unknown)';
     const layoutSide = meta?.layoutSide ?? 'left';
     const existing = groups.get(folder);
     if (existing) {

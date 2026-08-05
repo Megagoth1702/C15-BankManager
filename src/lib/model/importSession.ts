@@ -163,12 +163,18 @@ function mergeBanks(
   clearHistory();
 
   bankMeta.update((m) => {
-    const selected = m.selectedBankUuids.filter((uuid) =>
-      merged.some((b) => b.uuid === uuid),
-    );
+    const stillExists = (uuid: string) => merged.some((b) => b.uuid === uuid);
+    const selected = m.selectedBankUuids.filter(stillExists);
+    const base = (m.bankSelectionBaseUuids ?? []).filter(stillExists);
+    const anchor =
+      m.bankSelectionAnchorUuid && stillExists(m.bankSelectionAnchorUuid)
+        ? m.bankSelectionAnchorUuid
+        : (selected[selected.length - 1] ?? null);
     return {
       ...m,
       selectedBankUuids: selected,
+      bankSelectionBaseUuids: base,
+      bankSelectionAnchorUuid: selected.length > 0 ? anchor : null,
       serializeDate: doc?.serializeDate || m.serializeDate,
       selectedMidiBankUuid: doc?.selectedMidiBankUuid || m.selectedMidiBankUuid,
       lastImportMode: 'merge',
@@ -389,6 +395,8 @@ export async function executeMassImport(
       bankMeta.update((m) => ({
         ...m,
         selectedBankUuids: [],
+        bankSelectionAnchorUuid: null,
+        bankSelectionBaseUuids: [],
         selectedPresetUuids: [],
         presetSelectionBankUuid: null,
       }));

@@ -4,15 +4,12 @@
   import {
     bankMeta,
     banks,
-    cancelRenamePreset,
-    renamePreset,
     selectBank,
     selectPreset,
   } from '../lib/model/bankStore';
   import { buildBankForest, flattenBankForest } from '../lib/model/bankTree';
   import {
     buildPresetSearchIndex,
-    formatPresetSearchLabel,
     performPresetSearch,
     type PresetSearchEntry,
     type SortBy,
@@ -24,16 +21,10 @@
   } from '../lib/search/searchState';
   import { PRESET_COLOR_NAMES } from '../lib/xml/presetAttributes';
   import PresetBrowseList from './PresetBrowseList.svelte';
-  import PresetSearchMatchBadges from './PresetSearchMatchBadges.svelte';
   import SidebarPresetInfoTooltip from './SidebarPresetInfoTooltip.svelte';
-  import { focusRenameInput } from '../lib/ui/focusRenameInput';
 
   let showSettings = $state(true);
   let showBankScope = $state(false);
-  let inputFocused = $state(false);
-  let dropdownFocused = $state(false);
-  let highlightIndex = $state(0);
-  let presetRenameDraft = $state('');
   let infoTooltip = $state<{
     bankName: string;
     comment: string;
@@ -42,16 +33,17 @@
   } | null>(null);
 
   let searchInput: HTMLInputElement | undefined = $state();
-  let dropdownEl: HTMLDivElement | undefined = $state();
+  let browseList: {
+    navigateFromSearch: (delta: number) => boolean;
+    focus: () => void;
+  } | undefined = $state();
 
   const index = $derived(buildPresetSearchIndex($banks));
+  /** Single list path: empty query = full filtered browse; non-empty = search hits. */
   const results = $derived(
     performPresetSearch(index, $presetSearchQuery, $presetSearchState),
   );
-
-  const browseResults = $derived(
-    performPresetSearch(index, '', $presetSearchState).map((result) => result.entry),
-  );
+  const queryActive = $derived($presetSearchQuery.trim().length > 0);
 
   /** Banks in sidebar tree order for scope multi-select. */
   const banksInOrder = $derived(
@@ -168,16 +160,6 @@
     return selected.includes(uuid);
   }
 
-  const showDropdown = $derived(
-    $presetSearchQuery.trim().length > 0 && (inputFocused || dropdownFocused),
-  );
-
-  $effect(() => {
-    $presetSearchQuery;
-    $presetSearchState;
-    highlightIndex = 0;
-  });
-
   /** Sidebar collapsed → search icon: expand + Presets tab then land focus here. */
   $effect(() => {
     if (!$pendingFocusPresetSearch) return;
@@ -186,31 +168,8 @@
       .then(() => {
         if (!$pendingFocusPresetSearch) return;
         searchInput?.focus();
-        inputFocused = true;
         pendingFocusPresetSearch.set(false);
       });
-  });
-
-  $effect(() => {
-    if (!showDropdown || results.length === 0) return;
-    const idx = highlightIndex;
-    void tick().then(() => scrollHighlightIntoView(idx));
-  });
-
-  function scrollHighlightIntoView(index: number): void {
-    if (!dropdownEl) return;
-    const item = dropdownEl.querySelector<HTMLElement>(`[data-highlight-index="${index}"]`);
-    item?.scrollIntoView({ block: 'nearest' });
-  }
-
-  $effect(() => {
-    const target = $bankMeta.renamingPreset;
-    if (!target || $bankMeta.renameSurface !== 'sidebar') return;
-    const bank = $banks.find((b) => b.uuid === target.bankUuid);
-    const preset = bank?.presets.find(
-      (p) => p.uuid.toLowerCase() === target.presetUuid.toLowerCase(),
-    );
-    if (preset) presetRenameDraft = preset.name;
   });
 
   function toggleColor(color: string): void {
@@ -243,38 +202,7 @@
       focusBankUuid: entry.bankUuid,
       focusPresetUuid: entry.presetUuid,
     }));
-    dropdownFocused = false;
-    inputFocused = false;
     searchInput?.blur();
-  }
-
-  function commitPresetRename(entry: PresetSearchEntry): void {
-    const target = $bankMeta.renamingPreset;
-    if (
-      !target ||
-      $bankMeta.renameSurface !== 'sidebar' ||
-      target.presetUuid !== entry.presetUuid
-    ) {
-      return;
-    }
-    if (presetRenameDraft.trim() === entry.name) {
-      cancelRenamePreset();
-      return;
-    }
-    renamePreset(entry.bankUuid, entry.presetUuid, presetRenameDraft);
-  }
-
-  function isRenamingEntry(entry: PresetSearchEntry): boolean {
-    const target = $bankMeta.renamingPreset;
-    return (
-      $bankMeta.renameSurface === 'sidebar' &&
-      target?.bankUuid === entry.bankUuid &&
-      target?.presetUuid === entry.presetUuid
-    );
-  }
-
-  function entryHasComment(entry: PresetSearchEntry): boolean {
-    return entry.comment.trim().length > 0;
   }
 
   function showInfoTooltip(entry: PresetSearchEntry, event: PointerEvent): void {
@@ -299,47 +227,32 @@
     infoTooltip = null;
   }
 
+  function focusSearchInput(): void {
+    searchInput?.focus();
+  }
+
   function onInputKeyDown(event: KeyboardEvent): void {
-    if (event.code === 'ArrowDown' && results.length > 0) {
+    if (event.code === 'ArrowDown') {
+      // Leave the search field → select first/next visible preset and focus the list.
+      if (results.length === 0) return;
       event.preventDefault();
-      dropdownFocused = true;
-      highlightIndex = 0;
-      queueMicrotask(() => dropdownEl?.focus());
+      const moved = browseList?.navigateFromSearch(1) ?? false;
+      if (moved) searchInput?.blur();
       return;
     }
     if (event.code === 'Enter') {
       event.preventDefault();
-      const result = results[highlightIndex] ?? results[0];
-      if (result) activate(result.entry);
+      const first = results[0];
+      if (first) activate(first.entry);
       return;
     }
     if (event.code === 'Escape') {
-      dropdownFocused = false;
-      inputFocused = false;
-    }
-  }
-
-  function onDropdownKeyDown(event: KeyboardEvent): void {
-    if (results.length === 0) return;
-    if (event.code === 'ArrowDown') {
-      event.preventDefault();
-      highlightIndex = Math.min(results.length - 1, highlightIndex + 1);
-    } else if (event.code === 'ArrowUp') {
-      event.preventDefault();
-      if (highlightIndex <= 0) {
-        dropdownFocused = false;
-        searchInput?.focus();
+      if (queryActive) {
+        event.preventDefault();
+        presetSearchQuery.set('');
         return;
       }
-      highlightIndex = highlightIndex - 1;
-    } else if (event.code === 'Enter') {
-      event.preventDefault();
-      const result = results[highlightIndex];
-      if (result) activate(result.entry);
-    } else if (event.code === 'Escape') {
-      event.preventDefault();
-      dropdownFocused = false;
-      searchInput?.focus();
+      searchInput?.blur();
     }
   }
 </script>
@@ -546,124 +459,22 @@
         bind:this={searchInput}
         type="text"
         class="w-full rounded border border-c15-border bg-c15-bg px-2 py-1.5 pr-7 text-xs text-c15-text
-          placeholder:text-c15-text-muted focus:border-c15-accent focus:outline-none
-          {showDropdown ? 'rounded-b-none border-b-transparent' : ''}"
+          placeholder:text-c15-text-muted focus:border-c15-accent focus:outline-none"
         placeholder="Search presets"
         bind:value={$presetSearchQuery}
-        onfocus={() => {
-          inputFocused = true;
-        }}
-        onblur={() => {
-          inputFocused = false;
-        }}
         onkeydown={onInputKeyDown}
       />
       {#if $presetSearchQuery}
         <button
           type="button"
           class="absolute right-1 top-1/2 -translate-y-1/2 px-1 text-xs text-c15-text-muted hover:text-c15-text"
+          title="Clear search"
           onclick={() => {
             presetSearchQuery.set('');
           }}
         >
           ×
         </button>
-      {/if}
-
-      {#if showDropdown}
-        <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-        <div
-          bind:this={dropdownEl}
-          role="listbox"
-          tabindex="0"
-          class="absolute left-0 right-0 top-full z-20 max-h-56 overflow-y-auto rounded-b border border-t-0
-            border-c15-accent/60 bg-c15-surface-raised shadow-lg outline-none"
-          onfocus={() => {
-            dropdownFocused = true;
-          }}
-          onblur={() => {
-            dropdownFocused = false;
-          }}
-          onkeydown={onDropdownKeyDown}
-        >
-          {#if results.length === 0}
-            <div class="px-3 py-2 text-xs text-c15-text-muted">No matching presets</div>
-          {:else}
-            <ul class="py-1">
-              {#each results as result, i (result.entry.presetUuid)}
-                {@const entry = result.entry}
-                {@const tag = presetColorFromName(entry.color)}
-                {@const renaming = isRenamingEntry(entry)}
-                {@const comment = entryHasComment(entry)}
-                <li data-highlight-index={i}>
-                  {#if renaming}
-                    <div class="flex items-stretch px-2 py-1">
-                      <span
-                        class="w-1 shrink-0 self-stretch"
-                        style:background-color={tag ?? 'transparent'}
-                      ></span>
-                      <input
-                        use:focusRenameInput
-                        type="text"
-                        class="min-w-0 flex-1 rounded border border-c15-accent bg-c15-bg px-1 py-0.5 text-xs text-c15-text outline-none"
-                        bind:value={presetRenameDraft}
-                        onkeydown={(e) => {
-                          e.stopPropagation();
-                          if (e.code === 'Enter') {
-                            e.preventDefault();
-                            commitPresetRename(entry);
-                          } else if (e.code === 'Escape') {
-                            e.preventDefault();
-                            cancelRenamePreset();
-                          }
-                        }}
-                        onblur={() => commitPresetRename(entry)}
-                      />
-                    </div>
-                  {:else}
-                    <button
-                      type="button"
-                      role="option"
-                      aria-selected={i === highlightIndex}
-                      class="relative flex w-full items-stretch text-left text-xs transition-colors
-                        {i === highlightIndex
-                        ? 'bg-c15-preset-selected text-c15-text'
-                        : 'text-c15-text hover:bg-c15-surface'}"
-                      onmousedown={(e) => e.preventDefault()}
-                      onclick={() => activate(entry)}
-                      onpointerenter={(e) => showInfoTooltip(entry, e)}
-                      onpointermove={moveInfoTooltip}
-                      onpointerleave={hideInfoTooltip}
-                    >
-                      <span
-                        class="w-1 shrink-0"
-                        style:background-color={tag ?? 'transparent'}
-                      ></span>
-                      <span class="min-w-0 flex-1 truncate px-2 py-1.5">
-                        {formatPresetSearchLabel(entry)}
-                      </span>
-                      <PresetSearchMatchBadges
-                        matched={result.matchedFields}
-                        highlighted={i === highlightIndex}
-                      />
-                      {#if comment}
-                        <span
-                          class="pointer-events-none shrink-0 self-center pr-1.5 text-[10px] font-bold leading-none text-yellow-400"
-                          aria-hidden="true"
-                        >
-                          C
-                        </span>
-                      {/if}
-                    </button>
-                  {/if}
-                </li>
-              {/each}
-            </ul>
-          {/if}
-          <div class="border-t border-c15-border/60 px-3 py-1 text-[10px] text-c15-text-muted">
-            Results: {results.length} · N/C/D = name/comment/device · ↓ enter list · Enter go to preset
-          </div>
-        </div>
       {/if}
     </div>
   </div>
@@ -674,10 +485,13 @@
     </div>
   {:else}
     <PresetBrowseList
-      entries={browseResults}
+      bind:this={browseList}
+      results={results}
+      queryActive={queryActive}
       onrowpointerenter={showInfoTooltip}
       onrowpointermove={moveInfoTooltip}
       onrowpointerleave={hideInfoTooltip}
+      onrequestfocussearch={focusSearchInput}
     />
   {/if}
 </div>

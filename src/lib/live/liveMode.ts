@@ -6,7 +6,9 @@ import { derived, get, writable } from 'svelte/store';
 import { getCanvasScreenSize } from '../canvas/pointerPosition';
 import { focusBank } from '../canvas/viewport.svelte';
 import { log } from '../debug/sessionLog';
-import { banks, getBanksSnapshot } from '../model/bankState';
+import { bankMeta, banks, clearUserPositioned, getBanksSnapshot } from '../model/bankState';
+import { clearSessionDirty } from '../model/sessionDirty';
+import { clearHistory, setLocalHistoryEnabled } from '../model/undoHistory';
 import { findByUuid } from '../uuid/uuidKey';
 import {
   applyLiveDocumentXml,
@@ -27,7 +29,6 @@ import {
 } from './liveImportJob';
 import { parseLiveDocument } from './parseLiveDocument';
 import { getLiveSettingsSnapshot, liveSettings, type LiveSettings } from './liveSettings';
-import { setLocalHistoryEnabled } from '../model/undoHistory';
 
 export type LiveConnectionState =
   | 'offline'
@@ -354,6 +355,45 @@ export function connectLive(settingsOverride?: Partial<LiveSettings>): boolean {
   return true;
 }
 
+/**
+ * Drop the Live mirror from the canvas. WS library is metadata shells only;
+ * after disconnect those banks are not real offline sound data — clear them
+ * so the UI does not look like a full session. Call only on user Disconnect
+ * (not silent teardown before reconnect).
+ */
+export function clearSessionAfterLiveDisconnect(): number {
+  const count = getBanksSnapshot().length;
+  banks.set([]);
+  clearUserPositioned();
+  clearHistory();
+  clearSessionDirty();
+  bankMeta.update((m) => ({
+    ...m,
+    selectedBankUuids: [],
+    bankSelectionAnchorUuid: null,
+    bankSelectionBaseUuids: [],
+    selectedMidiBankUuid: '',
+    selectedPresetUuids: [],
+    presetSelectionBankUuid: null,
+    presetSelectionAnchorUuid: null,
+    presetSelectionBaseUuids: [],
+    renamingBankUuid: null,
+    renamingPreset: null,
+    focusBankUuid: null,
+    focusPresetUuid: null,
+    revealSidebarPresetUuid: null,
+    revealSidebarBankUuid: null,
+    deleteFocus: null,
+    lastImportFilename: '',
+    lastImportMode: null,
+    error: null,
+    loading: false,
+    selectionSurface: null,
+    renameSurface: null,
+  }));
+  return count;
+}
+
 export function disconnectLive(opts?: { silent?: boolean }): void {
   const c = client;
   client = null;
@@ -363,12 +403,13 @@ export function disconnectLive(opts?: { silent?: boolean }): void {
   resetDeviceUndoState();
   if (c) c.disconnect();
   if (!opts?.silent) {
-    // Keep mirrored banks on canvas as offline session; mark as unsaved
-    // so export is obvious (device may still diverge). Local undo resumes empty.
+    // User Disconnect: drop Live mirror (shells are not keepable offline data).
+    // Silent path (connectLive teardown / reconnect) keeps canvas until the
+    // next library pull replaces it.
+    const cleared = clearSessionAfterLiveDisconnect();
     setLocalHistoryEnabled(true);
-    const count = getBanksSnapshot().length;
     liveMode.set({ ...initial });
-    log('C15-LIVE', 'disconnected', { banksOnCanvas: count });
+    log('C15-LIVE', 'disconnected', { clearedBanks: cleared });
   }
 }
 

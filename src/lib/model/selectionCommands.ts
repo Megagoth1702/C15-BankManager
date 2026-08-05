@@ -16,7 +16,7 @@ import {
 } from './documentCommit';
 import { presetRangeInOrder, uniquePresetUuids } from './presetSelection';
 import { setSidebarTab } from './settingsCommands';
-import { uuidEquals } from '../uuid/uuidKey';
+import { uniqueUuids, uuidEquals } from '../uuid/uuidKey';
 import {
   pushLoadPreset,
   pushSelectBank,
@@ -24,6 +24,23 @@ import {
 } from '../live/livePush';
 
 export type SelectMode = 'replace' | 'toggle' | 'add';
+
+/** Inclusive range between two UUIDs in tree/list order (sidebar bank multi-select). */
+export function bankRangeInOrder(
+  order: readonly string[],
+  anchorUuid: string,
+  clickedUuid: string,
+): string[] {
+  const i1 = order.findIndex((u) => uuidEquals(u, anchorUuid));
+  const i2 = order.findIndex((u) => uuidEquals(u, clickedUuid));
+  if (i1 === -1 || i2 === -1) return [clickedUuid];
+  const [lo, hi] = i1 < i2 ? [i1, i2] : [i2, i1];
+  return order.slice(lo, hi + 1) as string[];
+}
+
+function uniqueBankUuids(uuids: readonly string[]): string[] {
+  return uniqueUuids(uuids);
+}
 
 /**
  * Bank header context-menu selection (mirrors preset context menu):
@@ -60,23 +77,25 @@ export function selectBanks(
   mode: 'replace' | 'add' = 'replace',
 ): void {
   bankMeta.update((m) => {
-    const next =
-      mode === 'add'
-        ? [...new Set([...m.selectedBankUuids, ...uuids])]
-        : [...uuids];
+    const next = uniqueBankUuids(
+      mode === 'add' ? [...m.selectedBankUuids, ...uuids] : [...uuids],
+    );
     const primary = next[next.length - 1] ?? null;
-    const base = mode === 'replace' ? clearPresetSelectionFields(m) : m;
+    const cleared = mode === 'replace' ? clearPresetSelectionFields(m) : m;
     return {
-      ...base,
+      ...cleared,
       selectedBankUuids: next,
+      // Marquee / batch counts as a new anchor (plain selection gesture).
+      bankSelectionAnchorUuid: primary,
+      bankSelectionBaseUuids: next,
       deleteFocus: next.length > 0 ? 'bank' : null,
       selectionSurface: 'canvas',
       // Marquee / batch selection is canvas-origin — reveal primary bank in the sidebar tree.
       revealSidebarBankUuid: primary,
       renamingBankUuid:
-        base.renamingBankUuid && primary && base.renamingBankUuid !== primary
+        cleared.renamingBankUuid && primary && cleared.renamingBankUuid !== primary
           ? null
-          : base.renamingBankUuid,
+          : cleared.renamingBankUuid,
     };
   });
   if (uuids.length > 0) {
@@ -304,9 +323,7 @@ export function selectBank(
   bankMeta.update((m) => {
     if (uuid === null) {
       return clearPresetSelectionFields({
-        ...m,
-        selectedBankUuids: [],
-        renamingBankUuid: null,
+        ...clearBankSelectionFields(m),
         deleteFocus: null,
         revealSidebarBankUuid: null,
       });
@@ -316,11 +333,11 @@ export function selectBank(
     if (mode === 'replace') {
       next = [uuid];
     } else if (mode === 'toggle') {
-      next = m.selectedBankUuids.includes(uuid)
-        ? m.selectedBankUuids.filter((u) => u !== uuid)
+      next = m.selectedBankUuids.some((u) => uuidEquals(u, uuid))
+        ? m.selectedBankUuids.filter((u) => !uuidEquals(u, uuid))
         : [...m.selectedBankUuids, uuid];
     } else {
-      next = m.selectedBankUuids.includes(uuid)
+      next = m.selectedBankUuids.some((u) => uuidEquals(u, uuid))
         ? m.selectedBankUuids
         : [...m.selectedBankUuids, uuid];
     }
@@ -328,15 +345,23 @@ export function selectBank(
     const primary = next[next.length - 1] ?? null;
     const cleared =
       mode === 'replace' ? clearPresetSelectionFields(m) : m;
+    // Plain click and Ctrl/Meta toggle/add set the shift anchor + frozen base.
+    // Shift-range (selectBankRange) never calls here for the range path.
+    const anchorUuid = next.length > 0 ? uuid : null;
+    const baseUuids = next;
     // Toggle deselect of last bank leaves no selection to reveal.
     const reveal =
       surface === 'canvas' && primary != null ? primary : null;
     // Sidebar bank pick → pan canvas to that bank's header (zoom unchanged).
     const focusTarget =
-      surface === 'sidebar' && uuid !== null && next.includes(uuid) ? uuid : null;
+      surface === 'sidebar' && uuid !== null && next.some((u) => uuidEquals(u, uuid))
+        ? uuid
+        : null;
     return {
       ...cleared,
       selectedBankUuids: next,
+      bankSelectionAnchorUuid: anchorUuid,
+      bankSelectionBaseUuids: baseUuids,
       deleteFocus: uuid !== null && next.length > 0 ? 'bank' : null,
       selectionSurface: surface,
       revealSidebarBankUuid: reveal,
@@ -361,7 +386,12 @@ export function selectBank(
   }
 }
 
-/** Sidebar tree click — Ctrl toggles; Shift range in tree order; plain click replaces. */
+/**
+ * Sidebar tree click — Ctrl toggles; Shift range from fixed anchor in tree order;
+ * plain click replaces. Anchor/base update only on plain and Ctrl clicks (via
+ * selectBank); successive Shift clicks re-range from the same anchor and union
+ * onto the frozen base so prior multi-select is not wiped.
+ */
 export function selectBankRange(
   uuid: string,
   orderedUuids: string[],
@@ -372,23 +402,36 @@ export function selectBankRange(
     return;
   }
   if (options.shift) {
-    const current = get(bankMeta).selectedBankUuids;
-    const anchor = current[current.length - 1];
+    const meta = get(bankMeta);
+    const anchor =
+      meta.bankSelectionAnchorUuid ??
+      meta.selectedBankUuids[meta.selectedBankUuids.length - 1] ??
+      null;
     if (!anchor) {
       selectBank(uuid, 'replace', 'sidebar');
       return;
     }
-    const i1 = orderedUuids.indexOf(anchor);
-    const i2 = orderedUuids.indexOf(uuid);
-    if (i1 === -1 || i2 === -1) {
+    const anchorIdx = orderedUuids.findIndex((u) => uuidEquals(u, anchor));
+    const clickIdx = orderedUuids.findIndex((u) => uuidEquals(u, uuid));
+    if (anchorIdx === -1 || clickIdx === -1) {
       selectBank(uuid, 'replace', 'sidebar');
       return;
     }
-    const [lo, hi] = i1 < i2 ? [i1, i2] : [i2, i1];
+    const range = bankRangeInOrder(orderedUuids, anchor, uuid);
+    const frozenBase =
+      meta.bankSelectionBaseUuids.length > 0
+        ? meta.bankSelectionBaseUuids
+        : meta.selectedBankUuids.length > 0
+          ? meta.selectedBankUuids
+          : [anchor];
+    const selected = uniqueBankUuids([...frozenBase, ...range]);
     setSidebarTab('banks');
     bankMeta.update((m) => ({
       ...clearPresetSelectionFields(m),
-      selectedBankUuids: orderedUuids.slice(lo, hi + 1),
+      selectedBankUuids: selected,
+      // Keep anchor + base frozen across successive Shift range adjusts.
+      bankSelectionAnchorUuid: anchor,
+      bankSelectionBaseUuids: frozenBase,
       renamingBankUuid: null,
       deleteFocus: 'bank',
       selectionSurface: 'sidebar',
@@ -396,7 +439,16 @@ export function selectBankRange(
       focusBankUuid: uuid,
       focusPresetUuid: null,
     }));
-    log('store', 'selectBankRange', { uuid, lo, hi });
+    log('store', 'selectBankRange', {
+      uuid,
+      anchor,
+      count: selected.length,
+    });
+    selTraceSelection('store.selectBankRange', {
+      uuid: uuid.slice(0, 8),
+      anchor: anchor.slice(0, 8),
+      count: selected.length,
+    });
     return;
   }
   selectBank(uuid, 'replace', 'sidebar');
@@ -407,6 +459,8 @@ export function startRenameBank(uuid: string, surface: InteractionSurface): void
   bankMeta.update((m) => ({
     ...m,
     selectedBankUuids: [uuid],
+    bankSelectionAnchorUuid: uuid,
+    bankSelectionBaseUuids: [uuid],
     deleteFocus: 'bank',
     renamingBankUuid: uuid,
     renameSurface: surface,

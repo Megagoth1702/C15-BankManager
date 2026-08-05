@@ -1,6 +1,7 @@
 import type { ImportableFile } from '../io/folderPicker';
 import {
   compareFoldersAlphabetic,
+  multiBankFileClusterKey,
   parseContainingFolder,
   parseSubPath,
 } from '../layout/smartLayout';
@@ -85,10 +86,15 @@ export async function scanMassImport(
       const bytes = new Uint8Array(await entry.file.arrayBuffer());
       const doc = parseFileBytes(bytes, entry.file.name);
       const presetCount = doc.banks.reduce((sum, bank) => sum + bank.presets.length, 0);
+      // Match mass-import packing: each multi-bank backup is its own scan/layout group.
+      const isMultiBankDoc = doc.source !== 'single-bank' || doc.banks.length > 1;
+      const groupFolder = isMultiBankDoc
+        ? multiBankFileClusterKey(containingFolder, entry.file.name)
+        : containingFolder;
       results.push({
         relativePath: entry.relativePath,
         fileName: entry.file.name,
-        containingFolder,
+        containingFolder: groupFolder,
         subPath,
         bankCount: doc.banks.length,
         presetCount,

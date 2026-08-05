@@ -3,6 +3,7 @@ import type { BankLayoutMeta, FolderBankSort } from '../layout/smartLayout';
 import {
   applyFolderChainLayout,
   entriesToBanks,
+  multiBankFileClusterKey,
   parseContainingFolder,
   parseSubPath,
   type ImportedBankEntry,
@@ -59,6 +60,12 @@ async function parseAllEntries(
       // Single-bank XML: stamp import like C15 (clear export). Multi-bank backups:
       // preserve existing import/export attributes from the file.
       const isSingleBank = doc.source === 'single-bank';
+      // Multi-bank docs (nlbackup / preset-manager) each pack as their own cluster.
+      // Single-bank XMLs in the same folder still share one chain (designer packs).
+      const isMultiBankDoc = !isSingleBank || doc.banks.length > 1;
+      const layoutClusterKey = isMultiBankDoc
+        ? multiBankFileClusterKey(containingFolder, item.file.name)
+        : undefined;
       for (const bank of doc.banks) {
         const stamped = isSingleBank
           ? stampImportAttributes(bank, item.file.name)
@@ -70,6 +77,7 @@ async function parseAllEntries(
             subPath,
             layoutSide: 'left',
             sourceFile: item.file.name,
+            ...(layoutClusterKey ? { layoutClusterKey } : {}),
           },
         });
       }

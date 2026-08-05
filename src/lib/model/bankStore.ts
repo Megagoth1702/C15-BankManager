@@ -37,6 +37,7 @@ import {
   userPositionedUuids,
 } from './bankState';
 import {
+  clearBankSelectionFields,
   clearError,
   clearPresetSelectionFields,
   commitBanks,
@@ -210,6 +211,8 @@ export {
 
 export {
   buildDefaultExportFilename,
+  banksHaveFullSoundData,
+  SHELL_EXPORT_OFFLINE_MESSAGE,
   exportSelectedBanksLabel,
   exportSelectedBanksAsXmlLabel,
   exportAllAsBackup,
@@ -610,6 +613,8 @@ export function createBank(
   bankMeta.update((m) => ({
     ...clearPresetSelectionFields(m),
     selectedBankUuids: [bank.uuid],
+    bankSelectionAnchorUuid: bank.uuid,
+    bankSelectionBaseUuids: [bank.uuid],
     deleteFocus: 'bank',
     renamingBankUuid: null,
     error: null,
@@ -795,6 +800,8 @@ export function createBankFromPresets(
   bankMeta.update((m) => ({
     ...clearPresetSelectionFields(m),
     selectedBankUuids: [empty.uuid],
+    bankSelectionAnchorUuid: empty.uuid,
+    bankSelectionBaseUuids: [empty.uuid],
     deleteFocus: 'bank',
     renamingBankUuid: null,
     error: null,
@@ -1088,8 +1095,17 @@ export async function deleteSelectedBanks(): Promise<boolean> {
   const list = getBanksSnapshot();
   const names = uuids
     .map((uuid) => findByUuid(list, uuid)?.name)
-    .filter(Boolean);
-  const message = `Delete ${uuids.length} selected banks (${names.join(', ')})? You can undo with the Undo button.`;
+    .filter((n): n is string => Boolean(n));
+  // Keep the confirm readable; full lists scroll in AppDialogHost if still long.
+  const namePreviewLimit = 15;
+  const nameList =
+    names.length <= namePreviewLimit
+      ? names.join(', ')
+      : `${names.slice(0, namePreviewLimit).join(', ')}, and ${names.length - namePreviewLimit} more`;
+  const message =
+    names.length === 0
+      ? `Delete ${uuids.length} selected banks? You can undo with the Undo button.`
+      : `Delete ${uuids.length} selected banks?\n\n${nameList}\n\nYou can undo with the Undo button.`;
   const proceed = await confirmAppDialog({
     title: 'Delete banks',
     message,
@@ -1107,8 +1123,7 @@ export async function deleteSelectedBanks(): Promise<boolean> {
   recordBankStructureFromLists('Delete banks', list, updated);
   bankMeta.update((m) => ({
     ...clearPresetSelectionFields(m),
-    selectedBankUuids: [],
-    renamingBankUuid: null,
+    ...clearBankSelectionFields(m),
     deleteFocus: null,
     error: null,
   }));
@@ -1143,6 +1158,11 @@ export async function deleteBank(uuid: string): Promise<boolean> {
 
   bankMeta.update((m) => {
     const nextBanks = m.selectedBankUuids.filter((u) => u !== uuid);
+    const nextBase = (m.bankSelectionBaseUuids ?? []).filter((u) => u !== uuid);
+    const nextAnchor =
+      m.bankSelectionAnchorUuid === uuid
+        ? (nextBanks[nextBanks.length - 1] ?? null)
+        : m.bankSelectionAnchorUuid;
     const presetCleared =
       m.presetSelectionBankUuid === uuid
         ? clearPresetSelectionFields(m)
@@ -1150,6 +1170,8 @@ export async function deleteBank(uuid: string): Promise<boolean> {
     return {
       ...presetCleared,
       selectedBankUuids: nextBanks,
+      bankSelectionBaseUuids: nextBase,
+      bankSelectionAnchorUuid: nextBanks.length > 0 ? nextAnchor : null,
       deleteFocus:
         nextBanks.length > 0
           ? 'bank'

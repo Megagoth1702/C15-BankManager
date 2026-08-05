@@ -192,8 +192,9 @@
 
       <p class="mb-3 text-[11px] leading-snug text-c15-text-muted">
         Connect on C15 Wi‑Fi/LAN. Playground is authority: the canvas is replaced with the device
-        library and stays two-way mirrored with NonMaps (layout RPCs land next). Export offline
-        work first if you need it.
+        library and stays two-way mirrored with NonMaps. Disconnect clears the canvas (Live is only
+        a device mirror — export while connected if you need a full offline backup). Export any
+        offline work before Connect if you need it.
       </p>
 
       <label class="mb-2 block text-[11px] text-c15-text-muted">

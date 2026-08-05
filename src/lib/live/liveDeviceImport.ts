@@ -187,6 +187,9 @@ export function applyImportUuidMapToSession(
 
   bankMeta.update((m) => {
     const selectedBankUuids = m.selectedBankUuids.map((u) => mapUuid(u));
+    const bankSelectionBaseUuids = (m.bankSelectionBaseUuids ?? []).map((u) =>
+      mapUuid(u),
+    );
     const renamingPreset = m.renamingPreset
       ? {
           bankUuid: mapUuid(m.renamingPreset.bankUuid),
@@ -196,6 +199,8 @@ export function applyImportUuidMapToSession(
     return {
       ...m,
       selectedBankUuids,
+      bankSelectionAnchorUuid: mapUuid(m.bankSelectionAnchorUuid),
+      bankSelectionBaseUuids,
       selectedMidiBankUuid: mapUuid(m.selectedMidiBankUuid),
       renamingBankUuid: mapUuid(m.renamingBankUuid),
       focusBankUuid: mapUuid(m.focusBankUuid),

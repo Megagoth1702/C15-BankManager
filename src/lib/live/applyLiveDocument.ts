@@ -385,10 +385,17 @@ export function applyLiveDocumentXml(xml: string): ApplyLiveResult {
       exists,
       { firstLibraryPull },
     );
+    const base = (m.bankSelectionBaseUuids ?? []).filter(exists);
+    const anchor =
+      m.bankSelectionAnchorUuid && exists(m.bankSelectionAnchorUuid)
+        ? m.bankSelectionAnchorUuid
+        : (selected[selected.length - 1] ?? null);
 
     return {
       ...m,
       selectedBankUuids: selected,
+      bankSelectionBaseUuids: base,
+      bankSelectionAnchorUuid: selected.length > 0 ? anchor : null,
       selectedMidiBankUuid:
         snapshot.selectedMidiBankUuid || m.selectedMidiBankUuid,
       serializeDate: m.serializeDate,

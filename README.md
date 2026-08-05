@@ -1,125 +1,135 @@
 # C15 Offline Preset Manager
 
-A browser-based preset manager for the Nonlinear Labs C15. Edit banks and presets fully offline, or connect the instrument over Wi-Fi and use a desktop-style interface that is faster than the stock Nonlinear Labs UI for browsing, arranging, and bulk work.
+Browser preset manager for the Nonlinear Labs **C15**. Banks, presets, docks, and clusters use the same rules as the instrument. The differences:
+- speed
+- mass imports
+- more detailed mouse-hover info fields
+- ability to mix and match different backup files into one canvas.
+
+You can edit fully offline on `.nlbackup` and bank XML, or connect the C15 over Wi‑Fi and run the same canvas against the live instrument. On GitHub Pages the app is always available offline. Live mode needs a small local pack (browsers block the C15’s plain `ws://` WebSocket from an HTTPS page).
 
 **[Open the app](https://megagoth1702.github.io/C15-OfflinePresetManager/)**
 
-As of 24 July 2026 there are 8,559 official and sound-designer presets for the C15 available. Use This tool to reorganize, merge, dock, and rearrange large libraries on a computer, with or without the synthesizer attached. At this stage it covers the same core bank and preset workflows as the instrument’s own interface, built for a real display, mouse, and keyboard.
-
-![Live mode — C15 Offline Preset Manager](img/LiveScreenshot.png)
+As of 24 July 2026 the public C15 library lists **8,559** official and sound-designer presets. This tool is meant for libraries that size: import, merge, dock, search, multi-select, and export without doing that work on the instrument UI.
 
 ---
 
-## Getting started
+## Offline vs Live
 
-### Offline (works on this site)
+|                           | Offline                     | Live                                                         |
+| ------------------------- | --------------------------- | ------------------------------------------------------------ |
+| How you start             | Open the app site above     | Local Live pack (next section)                               |
+| Where the data comes from | Import `.nlbackup` / `.xml` | Connect to the C15 on your LAN                               |
+| Who owns the library      | The file on your disk       | The instrument; the app mirrors it                           |
+| How you leave with a file | Export whenever you want    | Export **while still connected** if you need full sound data |
 
-Import `.nlbackup` files or bank XML, arrange everything on the canvas, then export a clean backup or individual XML files. All processing stays in the browser. No instrument required.
+Offline: import backups, rearrange the canvas, export a `.nlbackup` or individual bank XML. No instrument required.
 
-### Live mode (C15 over Wi-Fi)
-
-Connect the C15 on the same network and edit banks and presets in real time:
-
-- Bank info appears on the canvas (and in tooltips when zoomed out)
-- Import, merge, or replace libraries on the instrument from the app
-- Selection and layout stay in sync while you work
-
-Live mode cannot run from the GitHub Pages site alone. The site is HTTPS; browsers block the C15’s plain LAN WebSocket (`ws://`) from secure origins. Offline editing of `.nlbackup` and bank XML continues to work here.
-
-To use Live, download the **Local Live pack** from  
-**[GitHub Releases (latest)](https://github.com/Megagoth1702/C15-OfflinePresetManager/releases/latest)**  
-Unzip, then double-click `Start.bat` (Windows), `Start.command` (macOS), or `Start.sh` (Linux). The pack serves the same app over `http://localhost` so Connect works. The first run downloads a small official Node.js runtime; later starts can pull updates from Releases automatically.
+Live: same canvas and editing tools, talking to the C15 on the local network. Layout and library changes go to the device. While connected, Undo and Redo call the instrument’s `/undo` endpoints instead of a separate local history.
 
 ---
 
-## Who this is for
+## Local Live pack
 
-- Users who want a faster day-to-day interface than the stock Nonlinear Labs UI while the C15 is connected over Wi-Fi
-- People who download large preset packs and need to mass-import and clean them up quickly
-- Anyone who prefers a desktop canvas to prepare a tidy bank layout offline, then push it live or export a backup
-- Users merging content from several backups without fighting the instrument’s own interface
+Download from **[GitHub Releases (latest)](https://github.com/Megagoth1702/C15-OfflinePresetManager/releases/latest)**, unzip, then run `Start.bat` (Windows), `Start.command` (macOS), or `Start.sh` (Linux).
 
----
+The pack serves the app at `http://localhost` so Connect can open a WebSocket to the C15. First run fetches a small official Node.js runtime once. Later starts can pull app updates from Releases.
 
-## Features
-
-### Smart Folder Import + Auto-Dock
-
-Point the app at a folder that contains subfolders (for example by sound designer). Banks from each subfolder are sorted, docked into chains, and spaced so clusters do not overlap.
-
-### Visual docking (same behaviour as the C15)
-
-Docked banks show clear parent/child links:
-
-- Golden border in the left sidebar connecting related banks
-- Golden lines between bank headers on the canvas
-
-Move a parent bank and its children follow.
-
-### Bank info
-
-Full bank metadata (name, attributes, related info) is available on the canvas. When zoomed out in performance mode the same info stays reachable via tooltip.
-
-### Extended search
-
-- **Bank search** — locate banks by name (not available in the original C15 software)
-- **Preset search** — a small indicator shows whether the match came from name, comment, or device
-
-### Sorting
-
-- Sort banks in the library view
-- Sort presets inside a bank by name or creation date
-
-### Drag presets into empty space
-
-Drag presets out of a bank onto empty canvas space exactly as on the instrument.
-
-### Multi-select
-
-- **Banks**: hold `Ctrl` and drag with the left mouse button to marquee-select, or `Ctrl` + click bank headers. Only the selected banks move; docking relationships dissolve automatically if needed.
-- **Presets**: `Ctrl` + click for individual selection, `Shift` + click for range selection while keeping previous selections.
-
-### Export options
-
-- Export selected banks as a single `.nlbackup`
-- Or export them as individual `.xml` files
-
-### Multi-backup import
-
-Import as many `.nlbackup` files as needed, one after another. Nothing is wiped. Arrange freely, then export one combined backup or push live to the C15.
-
-### Other tools
-
-- Create empty banks
-- Golden **c** marks presets that carry a comment; hover to read it
-- Rename banks and presets with `F2`
-- Re-align button updates the stored coordinates of docked child banks so they match their visual position
-- Performance mode: when zoomed out, banks become simplified boxes without individual preset rows
+GitHub Pages stays useful for offline import and export. It cannot host Live mode.
 
 ---
 
-## Typical workflows
+## Quick start
 
-### Offline
+Offline:
 
-1. Import banks (single `.xml`, multiple `.xml`, folders, or one/multiple `.nlbackup` files)
-2. Arrange, dock, search, multi-select, rename, and sort
-3. Export a clean `.nlbackup` or individual `.xml` files for the C15
+1. Open the [app](https://megagoth1702.github.io/C15-OfflinePresetManager/).
+2. Import banks (single or multiple `.xml`, folders, or `.nlbackup` files), merge or replace the canvas
+3. Arrange, dock, search, rename, sort.
+4. Export a session `.nlbackup` or one `.xml` per selected bank.
 
-### Live (Wi-Fi)
+Live:
 
-1. Download the [Local Live pack](https://github.com/Megagoth1702/C15-OfflinePresetManager/releases/latest), unzip, and start it
-2. Connect to the C15 on the local network
-3. Browse and edit banks/presets with the desktop UI
-4. Merge or replace the instrument library, or keep working offline and push when ready
-
-Everything stays on your machine. Library data never leaves the PC except for the local-network conversation with your own C15 in Live mode.
+1. Start the Local Live pack from Releases.
+2. Connect to the C15 on your network.
+3. Edit on the browser UI; import what you wish, use merge or replace when you intend to change the device library.
+4. Export while connected if you want an offline backup of the sounds on the instrument, then Disconnect.
 
 ---
 
-## Technical notes
+## Docking Visual Changes
 
-- File import/export and offline editing are 100 % client-side; processing happens in the browser
-- Live mode talks only to the C15 on the local network (via the Local Live pack, not from the HTTPS website)
-- Round-trip fidelity is preserved. Duplicate bank or preset IDs on import receive new unique IDs automatically
-- Very large libraries (the full 8,559 presets) can use noticeable RAM and may show minor jank under some conditions
+On the canvas, docked banks show golden header lines. In the sidebar, related banks share a golden border. Moving a parent moves its children. Proximity dock is pointer-aware: on release the app commits the cyan highlight under the cursor.
+
+---
+
+## Import
+
+**Import files** accepts multiple `.xml` and `.nlbackup` files in one picker. **Import folder** walks subfolders (for example by sound designer), sorts banks inside each folder into right-attach chains, and packs those chains as separate groups.
+
+Mass import always asks merge or replace. Merge adds to what is already on the canvas. Replace wipes the session first. Bad files show up in the dialog with a reason.
+
+While Live, a successful import is sent to the device automatically. Merge runs sequential `import-bank` and keeps full preset bodies after the device assigns new UUIDs. Replace deletes every bank on the C15, waits, then uploads. Cancel on the confirm dialog leaves both the app and the instrument unchanged.
+
+---
+
+## Selection, search, keyboard
+
+Presets: `Ctrl`+click and `Shift`+click range. Drop presets on empty canvas to create a new bank of **copies** at the drop point (same idea as on the instrument). Sidebar preset search filters the existing browse list; there is no second results panel. Matched rows show **N**, **C**, or **D** for name, comment, or device. From the search field, ↓ moves into the list; ↑/↓ move the selection and scroll the row into view; ↑ on the first row returns focus to search. A yellow **c** marks a non-empty comment; hover the preset row (canvas or sidebar) to read it.
+
+Banks: `Ctrl`+drag on empty canvas marquees banks. `Ctrl`+click toggles headers on the canvas or in the sidebar. Sidebar Shift+click ranges from a fixed anchor (same idea as in-bank preset range select). Dragging a multi-selection moves only those banks. Live multi-select is local to the app; the C15 itself stays single-select, and device document updates do not collapse a multi-selection you are working with.
+
+`F2` renames the focused bank or preset. Selecting in the sidebar pans the canvas to that bank or preset without changing zoom. Selecting on the canvas scrolls the matching sidebar row into view.
+
+---
+
+## Bank info
+
+Bank headers and zoomed-out tooltips show name, comment, import and export file names and dates, last-changed time, and **State**. State is computed the way firmware does (`Unchanged since Import`, `Saved by Export`, `Not Saved By Export`), not stored as a free-text field in the XML.
+
+Library sort covers bank name, last changed, import date, and export date. Presets inside a bank sort by name or creation date.
+
+When you zoom out far enough, banks draw as lite boxes (performance mode). The **Bank detail** slider sets how soon that happens. **Canvas zoom** sits next to UI scale in the prefs bar.
+
+---
+
+## Export
+
+Toolbar and context menus offer:
+
+- **Export all as backup:** full session `.nlbackup`
+- **Export selection as backup:** one `.nlbackup` with only the selected banks
+- **Export selection as XML:** one C15 bank `.xml` per selected bank
+### Live export and Disconnect
+
+The Live view is a fast mirror of bank and preset structure. Full parameter trees stay on the instrument until export asks for them. Export while connected downloads sound data from the C15 (`/presets/download-banks`, or per-bank download for small XML exports), fills the session, then writes a normal backup. Exporting thin Live shells as if they were full presets is blocked.
+
+**Disconnect** clears the Live canvas. The connected view was device metadata, not an offline library you can keep editing and re-export later. Export first if you need the file. Silent teardown used for automatic reconnect does not clear the canvas the same way.
+
+---
+
+## Example workflows
+
+Offline prep: import → arrange and dock → export `.nlbackup` or bank XML → load on the C15 when you want.
+
+Live cleanup: Local pack → Connect → edit and dock → merge or replace onto the device → export while connected if you want a disk copy → Disconnect (canvas clears).
+
+Merge several sources: import backup A, then B, then a designer folder → one canvas → one export, or one Live replace.
+
+---
+
+## Limits
+
+Offline import, edit, and export run entirely in the browser. Live mode only talks to your C15 on the local network through the Local Live pack.
+
+Preset parameter XML is preserved on round-trip. If import would collide with an existing bank or preset ID, the app assigns a new unique ID.
+
+A full library on the order of 8,559 presets can use a lot of RAM and may hitch under heavy pan and zoom.
+
+---
+
+## Screenshots
+
+![Live mode, C15 Offline Preset Manager](img/LiveScreenshot.png)
+
+Docked clusters use golden borders and header lines. Preset search marks matches with N, C, or D for name, comment, or device.

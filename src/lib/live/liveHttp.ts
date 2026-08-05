@@ -6,15 +6,51 @@
 import type { LiveSettings } from './liveSettings';
 import { buildHttpBase } from './LiveC15Client';
 
+/**
+ * Full library backup from the device (gzip `.nlbackup`).
+ * Firmware shows HWUI splash while building — treat as a cold operation.
+ * Same endpoint NonMaps uses for "Save all Banks as Backup File".
+ */
 export async function downloadBanksBackup(settings: LiveSettings): Promise<ArrayBuffer> {
   const base = buildHttpBase(settings);
   const res = await fetch(`${base}/presets/download-banks`, {
     method: 'GET',
   });
   if (!res.ok) {
-    throw new Error(`download-banks failed: HTTP ${res.status}`);
+    throw new Error(
+      `download-banks failed: HTTP ${res.status}. ` +
+        `If this is a CORS/network error, use the Local Live pack or enable the dev proxy.`,
+    );
   }
-  return res.arrayBuffer();
+  const buf = await res.arrayBuffer();
+  if (buf.byteLength < 32) {
+    throw new Error('download-banks returned an empty or tiny response');
+  }
+  return buf;
+}
+
+/**
+ * Full single-bank XML from the device (includes parameter trees).
+ * `GET /banks/download-bank/?uuid=…`
+ */
+export async function downloadBankXml(
+  settings: LiveSettings,
+  bankUuid: string,
+): Promise<string> {
+  const base = buildHttpBase(settings);
+  const url = `${base}/banks/download-bank/?uuid=${encodeURIComponent(bankUuid)}`;
+  const res = await fetch(url, { method: 'GET' });
+  if (!res.ok) {
+    throw new Error(
+      `download-bank failed: HTTP ${res.status} (uuid ${bankUuid}). ` +
+        `If this is a CORS/network error, use the Local Live pack or enable the dev proxy.`,
+    );
+  }
+  const text = await res.text();
+  if (!text.includes('<bank')) {
+    throw new Error(`download-bank returned non-bank XML for ${bankUuid}`);
+  }
+  return text;
 }
 
 /**

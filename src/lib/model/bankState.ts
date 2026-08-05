@@ -12,6 +12,16 @@ export const banks = writable<Bank[]>([]);
 export const bankMeta = writable({
   /** Ordered selection; last entry is primary (attach handles, F2, status detail). */
   selectedBankUuids: [] as string[],
+  /**
+   * Shift-range anchor for sidebar bank multi-select.
+   * Set only on plain click and Ctrl/Meta+click — not on Shift+click.
+   */
+  bankSelectionAnchorUuid: null as string | null,
+  /**
+   * Frozen bank selection base — Shift ranges union onto this so prior
+   * Ctrl multi-select (and the initial plain click) survive range adjusts.
+   */
+  bankSelectionBaseUuids: [] as string[],
   selectedMidiBankUuid: '',
   serializeDate: '',
   loading: false,

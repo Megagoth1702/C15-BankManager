@@ -1,7 +1,7 @@
 /**
  * Parse playground WebSocket `<nonlinear-world>` documents (live format).
  * Distinct from offline backup XML (`<bank>` / `attached-to-bank`).
- * @see docs/C15_LIVE_PROTOCOL.md
+ * @see .ObsidianBrain/Design/C15_LIVE_PROTOCOL.md
  * @see firmware Bank::writeDocument / Preset::writeDocument
  */
 

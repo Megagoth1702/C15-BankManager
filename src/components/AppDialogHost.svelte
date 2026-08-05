@@ -85,14 +85,18 @@
 {#if request}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
-    class="app-ui fixed inset-0 z-[200] flex items-center justify-center bg-black/60 p-4"
+    class="app-ui fixed inset-0 z-[200] flex items-center justify-center bg-black/60 p-3 sm:p-4"
     role="presentation"
     onclick={onBackdropClick}
     onkeydown={onKeyDown}
   >
+    <!--
+      Viewport-capped shell: title + actions stay visible; long messages scroll.
+      max-height uses dvh so mobile browser chrome does not clip the footer.
+    -->
     <div
       bind:this={dialogEl}
-      class="w-full max-w-md rounded-lg border border-c15-border bg-c15-surface p-4 shadow-xl"
+      class="flex w-full max-w-md flex-col overflow-hidden rounded-lg border border-c15-border bg-c15-surface shadow-xl max-h-[min(90dvh,calc(100vh-1.5rem))]"
       role="dialog"
       aria-modal="true"
       aria-labelledby="app-dialog-title"
@@ -100,29 +104,36 @@
       onclick={(e) => e.stopPropagation()}
       onkeydown={(e) => e.stopPropagation()}
     >
-      <h2 id="app-dialog-title" class="mb-2 text-sm font-semibold text-c15-text">
-        {request.title}
-      </h2>
-      {#if request.message}
-        <p class="mb-4 whitespace-pre-wrap text-xs leading-relaxed text-c15-text-muted">
-          {request.message}
-        </p>
-      {/if}
+      <div class="shrink-0 border-b border-c15-border/60 px-4 pt-4 pb-2">
+        <h2 id="app-dialog-title" class="text-sm font-semibold text-c15-text">
+          {request.title}
+        </h2>
+      </div>
 
-      {#if request.kind === 'prompt'}
-        <label class="mb-4 block">
-          <span class="sr-only">Value</span>
-          <input
-            bind:this={inputEl}
-            bind:value={promptValue}
-            type="text"
-            class="w-full rounded border border-c15-border bg-c15-surface-raised px-3 py-2 text-sm text-c15-text outline-none focus:border-c15-accent"
-            onkeydown={onPromptKeyDown}
-          />
-        </label>
-      {/if}
+      <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3">
+        {#if request.message}
+          <p class="whitespace-pre-wrap text-xs leading-relaxed text-c15-text-muted">
+            {request.message}
+          </p>
+        {/if}
 
-      <div class="flex flex-wrap justify-end gap-2">
+        {#if request.kind === 'prompt'}
+          <label class="mt-3 block">
+            <span class="sr-only">Value</span>
+            <input
+              bind:this={inputEl}
+              bind:value={promptValue}
+              type="text"
+              class="w-full rounded border border-c15-border bg-c15-surface-raised px-3 py-2 text-sm text-c15-text outline-none focus:border-c15-accent"
+              onkeydown={onPromptKeyDown}
+            />
+          </label>
+        {/if}
+      </div>
+
+      <div
+        class="flex shrink-0 flex-wrap justify-end gap-2 border-t border-c15-border/60 bg-c15-surface px-4 py-3"
+      >
         {#if request.kind !== 'alert'}
           <button
             type="button"

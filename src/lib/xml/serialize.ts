@@ -194,4 +194,8 @@ export function serializePresetManagerXml(input: SerializePresetManagerInput): s
   return `${lines.join('\n')}\n`;
 }
 
-export { attachDirectionForC15, validateBanksForC15Export } from './c15XmlFormat';
+export {
+  attachDirectionForC15,
+  detachOrphanAttachmentsForExport,
+  validateBanksForC15Export,
+} from './c15XmlFormat';

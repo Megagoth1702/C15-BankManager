@@ -33,8 +33,34 @@ export interface BankLayoutMeta {
   subPath: string;
   layoutSide: LayoutSide;
   sourceFile: string;
+  /**
+   * Packing group identity. Multi-bank files (`.nlbackup` / preset-manager XML) set this
+   * so each backup is its own attach cluster even when files share a containing folder.
+   * Single-bank XMLs omit it and group by `containingFolder` only (designer folder chains).
+   */
+  layoutClusterKey?: string;
   /** True for legacy synthetic folder-label banks (no longer created on import). */
   isFolderParent?: boolean;
+}
+
+/**
+ * Stable packing key for one multi-bank source file.
+ * Distinct from bare folder names so a backup never merges into a sibling XML chain.
+ */
+export function multiBankFileClusterKey(
+  containingFolder: string,
+  sourceFile: string,
+): string {
+  const file = sourceFile.trim() || 'backup';
+  if (!containingFolder || containingFolder === '(root)') {
+    return `file:${file}`;
+  }
+  return `${containingFolder}/file:${file}`;
+}
+
+/** Effective mass-import packing group for an entry. */
+export function layoutClusterKeyOf(meta: BankLayoutMeta): string {
+  return meta.layoutClusterKey ?? meta.containingFolder;
 }
 
 export function isFolderParentBank(bank: Bank): boolean {
@@ -247,10 +273,15 @@ interface FolderGroup {
   entries: ImportedBankEntry[];
 }
 
-function groupByContainingFolder(entries: ImportedBankEntry[]): FolderGroup[] {
+/**
+ * Group entries for packing: one horizontal attach chain per layout cluster.
+ * Prefer `layoutClusterKey` (per multi-bank file); fall back to containing folder
+ * so single-bank XMLs in one designer folder still form one chain.
+ */
+function groupByLayoutCluster(entries: ImportedBankEntry[]): FolderGroup[] {
   const map = new Map<string, ImportedBankEntry[]>();
   for (const entry of entries) {
-    const key = entry.meta.containingFolder;
+    const key = layoutClusterKeyOf(entry.meta);
     const list = map.get(key) ?? [];
     list.push(entry);
     map.set(key, list);
@@ -828,7 +859,7 @@ export function applyFolderChainLayout(
   existingBanks: Bank[] = [],
 ): ImportedBankEntry[] {
   const stripped = stripAllAttachments(entries);
-  const groups = groupByContainingFolder(stripped);
+  const groups = groupByLayoutCluster(stripped);
   const seedRects = existingBanks.map((bank) => bankToC15Rect(bank));
   return layoutClustersAgainstNoGo(groups, options, seedRects);
 }
