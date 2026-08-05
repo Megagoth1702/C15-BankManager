@@ -5,7 +5,7 @@ echo ""
 echo "  C15 Bank Manager — Local Live pack"
 echo ""
 
-chmod +x "./launcher/ensure-node.sh" "./Start.sh" 2>/dev/null || true
+chmod +x "./launcher/ensure-node.sh" "./Start-macOS.command" "./Start-Linux.sh" 2>/dev/null || true
 
 if [ ! -x "./runtime/node/bin/node" ]; then
   echo "  Preparing portable Node.js runtime (first run only)…"

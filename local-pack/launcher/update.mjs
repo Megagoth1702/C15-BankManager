@@ -247,7 +247,12 @@ export async function checkAndApplyUpdate() {
     if (fs.existsSync(newLauncher)) {
       copyDir(newLauncher, path.join(stage, 'launcher'));
     }
-    for (const name of ['Start.bat', 'Start.command', 'Start.sh', 'README-LOCAL.txt']) {
+    for (const name of [
+      'Start-Windows.bat',
+      'Start-macOS.command',
+      'Start-Linux.sh',
+      'README-LOCAL.txt',
+    ]) {
       const src = path.join(payload, name);
       if (fs.existsSync(src)) {
         fs.copyFileSync(src, path.join(stage, name));
@@ -269,7 +274,12 @@ export async function checkAndApplyUpdate() {
       );
     }
 
-    for (const name of ['Start.bat', 'Start.command', 'Start.sh', 'README-LOCAL.txt']) {
+    for (const name of [
+      'Start-Windows.bat',
+      'Start-macOS.command',
+      'Start-Linux.sh',
+      'README-LOCAL.txt',
+    ]) {
       const src = path.join(stage, name);
       if (fs.existsSync(src)) {
         fs.copyFileSync(src, path.join(PACK_ROOT, name));

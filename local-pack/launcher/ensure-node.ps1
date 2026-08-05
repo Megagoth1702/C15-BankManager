@@ -86,7 +86,7 @@ catch {
   Write-Host "  $($_.Exception.Message)" -ForegroundColor Red
   Write-Host ""
   Write-Host "  Manual fix: install Node.js LTS from https://nodejs.org/"
-  Write-Host "  then re-run Start.bat (system Node can also launch the pack)."
+  Write-Host "  then re-run Start-Windows.bat (system Node can also launch the pack)."
   Write-Host ""
   Write-Log "FAILED: $($_.Exception.Message)"
   exit 1

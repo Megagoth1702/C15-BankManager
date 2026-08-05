@@ -7,11 +7,11 @@ Why this pack?
   http://127.0.0.1 so Live mode works.
 
 How to run
-  Windows:  double-click  Start.bat
-  macOS:    double-click  Start.command
+  Windows:  double-click  Start-Windows.bat
+  macOS:    double-click  Start-macOS.command
             (if macOS blocks it: right-click → Open, or in Terminal:
              xattr -cr "/path/to/this/folder")
-  Linux:    ./Start.sh
+  Linux:    ./Start-Linux.sh
 
 First run
   Downloads official Node.js (pinned version) from nodejs.org into the

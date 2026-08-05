@@ -82,7 +82,7 @@ jobs:
             The website alone cannot (HTTPS pages cannot open the C15’s `ws://` link).
 
             1. Download **C15-BankManager-local.zip** below
-            2. Unzip → double-click **Start.bat** (Windows) / **Start.command** (macOS) / **Start.sh** (Linux)
+            2. Unzip → double-click **Start-Windows.bat** / **Start-macOS.command** / **Start-Linux.sh**
             3. First run downloads official Node.js once from nodejs.org
             4. In the app: connect to your C15 on the LAN
 

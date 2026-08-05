@@ -31,7 +31,7 @@ Live: same canvas and editing tools, talking to the C15 on the local network. La
 
 ## Local Live pack
 
-Download from **[GitHub Releases (latest)](https://github.com/Megagoth1702/C15-BankManager/releases/latest)**, unzip, then run `Start.bat` (Windows), `Start.command` (macOS), or `Start.sh` (Linux).
+Download from **[GitHub Releases (latest)](https://github.com/Megagoth1702/C15-BankManager/releases/latest)**, unzip, then run `Start-Windows.bat`, `Start-macOS.command`, or `Start-Linux.sh`.
 
 The pack serves the app at `http://localhost` so Connect can open a WebSocket to the C15. First run fetches a small official Node.js runtime once. Later starts can pull app updates from Releases.
 
